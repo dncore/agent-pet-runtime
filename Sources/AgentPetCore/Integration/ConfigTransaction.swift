@@ -374,7 +374,13 @@ public struct ConfigTransaction: Sendable {
         }
     }
 
-    private func backUp(_ snapshot: ConfigSnapshot) throws -> URL? {
+    /// Copies a snapshot into the backup directory, named with a timestamp and
+    /// a fingerprint, and prunes the oldest.
+    ///
+    /// Not private: the extension-file configurator backs up through the same
+    /// directory and the same naming, so one cleanup policy covers every edit
+    /// the runtime makes.
+    func backUp(_ snapshot: ConfigSnapshot) throws -> URL? {
         guard snapshot.existed else { return nil }
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
@@ -396,17 +402,43 @@ public struct ConfigTransaction: Sendable {
         return target
     }
 
-    /// Keeps backup growth bounded. Named with a timestamp, so lexical order is
-    /// chronological.
+    /// Keeps backup growth bounded, oldest first.
+    ///
+    /// Age comes from the filesystem, not from the name. The name is
+    /// `"<file>.<timestamp>.<fingerprint>"`, so sorting names *is*
+    /// chronological — but only while every backup here came from the same
+    /// file. A second integration writing to this directory broke that: Oh My
+    /// Pi's extension is backed up as `agentpet.ts.…`, which sorts before
+    /// `settings.json.…` however new it is. The backup taken a moment earlier
+    /// was then the first one pruned, and the path the caller had just been
+    /// handed no longer existed (2026-09-15).
     private func pruneBackups() {
         let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
         guard let entries = try? fileManager.contentsOfDirectory(
-            at: backupDirectory, includingPropertiesForKeys: nil
+            at: backupDirectory, includingPropertiesForKeys: Array(keys)
         ) else { return }
+        guard entries.count > maxBackups else { return }
 
-        let sorted = entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard sorted.count > maxBackups else { return }
-        for url in sorted.prefix(sorted.count - maxBackups) {
+        func age(_ url: URL) -> Date? {
+            (try? url.resourceValues(forKeys: keys))?.contentModificationDate
+        }
+
+        let ordered = entries.sorted { left, right in
+            switch (age(left), age(right)) {
+            case let (leftDate?, rightDate?):
+                // Two writes inside the same clock tick are still distinct
+                // files; the name settles the order the clock cannot.
+                return leftDate == rightDate
+                    ? left.lastPathComponent < right.lastPathComponent
+                    : leftDate < rightDate
+            case (_?, nil):  return true
+            case (nil, _?):  return false
+            case (nil, nil): return left.lastPathComponent < right.lastPathComponent
+            }
+        }
+
+        for url in ordered.prefix(ordered.count - maxBackups) {
             try? fileManager.removeItem(at: url)
         }
     }

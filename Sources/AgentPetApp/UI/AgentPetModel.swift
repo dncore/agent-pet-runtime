@@ -372,8 +372,9 @@ final class AgentPetModel: ObservableObject {
                 shimPath: shimPath,
                 transaction: transaction
             )
+            let what = status.profile.mechanism == .extensionFile ? "extension" : "hooks"
             var message = outcome.didChange
-                ? "Wrote hooks to \(outcome.changedFiles.joined(separator: ", "))"
+                ? "Wrote the \(what) to \(outcome.changedFiles.joined(separator: ", "))"
                 : "Already configured — nothing to change."
             // Codex's file alone is not enough: its hooks stay skipped until
             // the user trusts them in Codex itself.
@@ -391,9 +392,11 @@ final class AgentPetModel: ObservableObject {
                 agentID: status.profile.agentID,
                 transaction: transaction
             )
-            statusMessage = outcome.didChange
-                ? "Removed hooks. A backup of the previous file was kept."
-                : "Nothing to remove."
+            let what = status.profile.mechanism == .extensionFile ? "extension" : "hooks"
+            // A file that did not exist had nothing to copy: the transaction
+            // says so by reporting no backup, and the message follows it.
+            let kept = outcome.backupURLs.isEmpty ? "" : " A backup of the previous file was kept."
+            statusMessage = outcome.didChange ? "Removed the \(what).\(kept)" : "Nothing to remove."
             refreshAgents()
         }
     }
@@ -511,6 +514,8 @@ final class AgentPetModel: ObservableObject {
             return "Could not read \(path): \(detail)"
         case let ConfigurationError.unknownAgent(id):
             return "No configurator exists for \(id)."
+        case let ConfigurationError.foreignFile(path):
+            return "\(path) exists but was not written by the runtime. It is left alone."
         case let PetPackageError.manifestInvalid(name, detail):
             return "“\(name)” has an unusable pet.json: \(detail)"
         case let PetPackageError.manifestNotFound(name):

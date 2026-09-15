@@ -52,6 +52,17 @@ public struct NormalizationRule: Codable, Sendable, Equatable {
     /// second as one resurrects a session that has already closed.
     public let whenReason: String?
 
+    /// Only applies when the payload's tool name equals this.
+    ///
+    /// Read from this rule's own `toolNameField` through the same reader the
+    /// engine uses, so a nested path (`toolCall.name`, as Antigravity spells
+    /// it) works here too. The same kind of condition as `whenReason`, one
+    /// field over: an agent that reports *every* tool through a single event
+    /// needs the payload's tool name to say which of them is the one that
+    /// blocks on the user. Order matters as everywhere else — the narrow rule
+    /// is written before the general one for the same event.
+    public let whenToolName: String?
+
     /// Skips the rule when the payload lists a still-running background task.
     ///
     /// Claude Code fires `Stop` when the main agent yields, which happens while
@@ -87,6 +98,7 @@ public struct NormalizationRule: Codable, Sendable, Equatable {
         whenNotificationType: String? = nil,
         notificationTypeField: String? = nil,
         whenReason: String? = nil,
+        whenToolName: String? = nil,
         suppressedByRunningBackgroundTask: Bool = false,
         backgroundTasksField: String? = nil,
         suppressedWhenFalseField: String? = nil,
@@ -102,6 +114,7 @@ public struct NormalizationRule: Codable, Sendable, Equatable {
         self.whenNotificationType = whenNotificationType
         self.notificationTypeField = notificationTypeField
         self.whenReason = whenReason
+        self.whenToolName = whenToolName
         self.suppressedByRunningBackgroundTask = suppressedByRunningBackgroundTask
         self.backgroundTasksField = backgroundTasksField
         self.suppressedWhenFalseField = suppressedWhenFalseField
@@ -158,6 +171,18 @@ public extension NormalizationRule {
         if let required = whenReason {
             let actual = payload["reason"] as? String
             guard actual == required else { return false }
+        }
+
+        if let required = whenToolName {
+            // Through the shared reader, not `payload[field]`: it resolves
+            // dotted paths and the first entry of a string array, which is how
+            // an agent whose tool name is nested spells it.
+            //
+            // No field to read it from means the condition cannot be met, so
+            // the rule does not apply — rather than silently matching every
+            // payload, which would turn a typed mistake into a wrong state.
+            guard let field = toolNameField,
+                  EventNormalizer.string(payload, field) == required else { return false }
         }
 
         if suppressedByRunningBackgroundTask,
