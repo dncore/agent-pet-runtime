@@ -20,22 +20,23 @@ public enum EventCapture {
     /// Each is here because some diagnosis needs it. Anything whose value is
     /// user content is not, however useful it might be for debugging.
     ///
-    /// Two spellings of the same three facts, because two agents name them
-    /// differently: Claude Code's hooks use `session_id` / `tool_name`, and
-    /// Oh My Pi's extension reports the camelCase names its own API uses.
-    /// Missing that second spelling was not cosmetic — a spooled Oh My Pi
-    /// event lost its session id, so replaying it after a restart put the
-    /// session on screen under a process-derived name, next to the real one
-    /// (2026-09-15). The list stays explicit rather than derived from the
+    /// Two spellings of the same two facts — an id and a label — because agents
+    /// name them differently: Claude Code's hooks use `session_id` /
+    /// `tool_name`, and a camelCase wire such as Grok's captured hook payload
+    /// carries `sessionId` / `toolName` beside them. Missing the second
+    /// spelling was not cosmetic: a payload that spelled its session id only in
+    /// camelCase was spooled without one, so replaying it after a restart put
+    /// that session on screen under a process-derived name, next to the real
+    /// one (2026-09-15). The list stays explicit rather than derived from the
     /// profiles: a profile's `summaryField` is the user's own prompt on
     /// `UserPromptSubmit`, and an allowlist that followed profiles would
     /// follow prompts onto disk.
     public static let capturableKeys: Set<String> = [
         "session_id",       // opaque id; tells concurrent sessions apart
-        "sessionId",        // the same, as Oh My Pi's extension spells it
+        "sessionId",        // the same, as a camelCase wire spells it
         "hook_event_name",
         "tool_name",        // "Bash", "Read" — a label, not content
-        "toolName",         // the same, as Oh My Pi's extension spells it
+        "toolName",         // the same, as a camelCase wire spells it
         "notification_type",
         "permission_mode",
         "cwd",

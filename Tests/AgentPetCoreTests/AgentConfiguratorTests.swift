@@ -392,8 +392,9 @@ struct AgentIntegrationRegistryTests {
         where profile.configurator == nil {
             let note = profile.configurationNote ?? ""
             #expect(!note.isEmpty, "\(profile.agentID) is not configurable and says nothing about it")
-            // Only Codex has no configurator today; the uniqueness check
-            // stays armed for the next agent that does not.
+            // Every agent registered today has a configurator, so this loop is
+            // idle; the uniqueness check stays armed for the next agent that
+            // arrives without one.
             #expect(seen.insert(note).inserted, "\(profile.agentID) reuses another agent's note")
         }
     }

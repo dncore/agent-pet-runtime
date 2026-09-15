@@ -36,94 +36,21 @@ public struct PiConfigurator: AgentConfigurator {
 
     /// The path as it appears inside the template's JavaScript string literal.
     static func jsStringLiteral(_ path: String) -> String {
-        path
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        ExtensionTemplate.jsStringLiteral(path)
     }
 
+    /// The generated file is shared with Oh My Pi's integration — one template,
+    /// with the event set and the ownership marker as its parameters
+    /// (`ExtensionTemplate`).
     public static func template(shimPath: String) -> String {
-        templateSource.replacingOccurrences(
-            of: "__AGENTPET_SHIM__", with: jsStringLiteral(shimPath)
+        ExtensionTemplate.source(
+            agentID: "pi",
+            shimPath: shimPath,
+            events: .pi,
+            marker: "\(marker) — installed by Agent Pet Runtime."
         )
     }
 
-    /// Plain JavaScript (valid TypeScript), node built-ins only. Fire and
-    /// forget, the same contract the hooks keep: the pet missing an event is
-    /// invisible, an extension that stalls the agent is not.
-    static let templateSource = #"""
-    // agentpet-extension v1 — installed by Agent Pet Runtime.
-    // Reports session lifecycle and context usage to the pet, nothing else.
-    // Delete this file to remove the integration; the runtime deletes it too.
-    import { spawn } from "node:child_process";
-    import { basename } from "node:path";
-
-    const SHIM = "__AGENTPET_SHIM__";
-
-    function sessionIdFor(ctx) {
-      try {
-        const file = ctx && ctx.sessionManager && ctx.sessionManager.getSessionFile
-          ? ctx.sessionManager.getSessionFile()
-          : null;
-        if (file) return basename(String(file)).replace(/\.jsonl$/, "");
-      } catch {}
-      return `pid-${process.pid}`;
-    }
-
-    function report(event, payload) {
-      try {
-        const proc = spawn(SHIM, ["--agent", "pi", "--event", event], {
-          stdio: ["pipe", "ignore", "ignore"],
-          detached: true,
-        });
-        proc.on("error", () => {});
-        proc.stdin.on("error", () => {});
-        proc.stdin.end(JSON.stringify(payload));
-        proc.unref();
-      } catch {}
-    }
-
-    // The same reduced shape the status-line taps deliver: session id,
-    // percentage, window, tokens, model. Nothing else leaves this process.
-    function contextPayload(ctx) {
-      try {
-        const usage = ctx.getContextUsage ? ctx.getContextUsage() : null;
-        const tokens = usage && usage.tokens;
-        if (typeof tokens !== "number") return null;
-        const model = ctx.model;
-        const window = model && model.contextWindow;
-        const payload = {
-          session_id: sessionIdFor(ctx),
-          tokens: Math.round(tokens),
-          model: model ? (model.name || model.id) : undefined,
-        };
-        if (typeof window === "number" && window > 0) {
-          payload.window = window;
-          payload.used_percentage = Math.round((tokens / window) * 1000) / 10;
-        }
-        return payload;
-      } catch {
-        return null;
-      }
-    }
-
-    export default function (pi) {
-      pi.on("session_start", (_e, ctx) =>
-        report("session_start", { session_id: sessionIdFor(ctx), cwd: ctx.cwd }));
-      pi.on("agent_start", (_e, ctx) =>
-        report("agent_start", { session_id: sessionIdFor(ctx), cwd: ctx.cwd }));
-      pi.on("tool_execution_start", (e, ctx) =>
-        report("tool_execution_start", { session_id: sessionIdFor(ctx), cwd: ctx.cwd, toolName: e.toolName }));
-      pi.on("ui_prompt_start", (_e, ctx) =>
-        report("ui_prompt_start", { session_id: sessionIdFor(ctx), cwd: ctx.cwd }));
-      pi.on("agent_settled", (_e, ctx) => {
-        report("agent_settled", { session_id: sessionIdFor(ctx), cwd: ctx.cwd });
-        const context = contextPayload(ctx);
-        if (context) report("context_update", context);
-      });
-      pi.on("session_shutdown", (_e, ctx) =>
-        report("session_shutdown", { session_id: sessionIdFor(ctx), cwd: ctx.cwd }));
-    }
-    """#
 
     // MARK: - Reading
 

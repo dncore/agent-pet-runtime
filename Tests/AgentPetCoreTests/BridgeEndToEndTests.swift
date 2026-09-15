@@ -255,7 +255,7 @@ struct BridgeEndToEndTests {
         let (server, socket) = try makeServer(box)
         defer { server.stop() }
 
-        let payload = #"{"sessionId":"env-1","cwd":"/tmp/project"}"#
+        let payload = #"{"session_id":"env-1","cwd":"/tmp/project"}"#
         let status = try runShim(
             socket: socket,
             agent: "omp",
@@ -291,7 +291,7 @@ struct BridgeEndToEndTests {
         var expected = 0
 
         func send(event: String, extra: String = "") async throws -> AgentEvent? {
-            let payload = #"{"sessionId":"omp-session","cwd":"/tmp/project""# + extra + "}"
+            let payload = #"{"session_id":"omp-session","cwd":"/tmp/project""# + extra + "}"
             try runShim(
                 socket: socket, agent: "omp", event: event,
                 payload: payload, payloadViaEnvironment: true

@@ -44,15 +44,25 @@ struct PiConfigurationTests {
 
     @Test("every event the extension sends is one the normalizer knows about")
     func emittedEventsAreKnown() throws {
+        // Read off the generated file rather than from a list written here: the
+        // template takes the event set as a parameter, so a wrong parameter
+        // would leave the file sending events the profile cannot map — and a
+        // hand-written list would not notice.
+        let source = PiConfigurator.template(shimPath: piShim)
         let rules = try #require(AgentProfiles.profile(for: "pi"))
         let known = Set(rules.rules.flatMap(\.matches))
-        let emitted = [
-            "session_start", "agent_start", "tool_execution_start",
-            "ui_prompt_start", "agent_settled", "session_shutdown", "context_update",
-        ]
-        for event in emitted {
-            #expect(known.contains(event), "\(event) is sent but unknown to the normalizer")
+
+        let listened = source.components(separatedBy: "pi.on(\"").dropFirst().compactMap { chunk in
+            chunk.split(separator: "\"").first.map(String.init)
         }
+        #expect(!listened.isEmpty, "the template registers nothing")
+        for event in listened {
+            #expect(known.contains(event), "\(event) is listened for but unknown to the normalizer")
+        }
+        // The reading rides out of the settle handler rather than off an event
+        // of its own, so it is sent, not listened for.
+        #expect(source.contains("send(\"context_update\""), "the context reading is never sent")
+        #expect(known.contains("context_update"), "context_update is sent but unknown")
     }
 
     @Test("configuring writes one marked file and nothing else")
@@ -65,7 +75,12 @@ struct PiConfigurationTests {
         let text = try #require(sandbox.fileText())
         #expect(text.contains(PiConfigurator.marker))
         #expect(text.contains(piShim))
-        #expect(text.contains("--agent") && text.contains("pi"))
+        // The spawned command names the agent, in both places it can: the
+        // argv the shim is called with, and the constant the file reads it
+        // from. Asserting only "--agent" and "pi" separately was true of any
+        // file at all (`export default function (pi)` carries "pi").
+        #expect(text.contains("--agent pi"))
+        #expect(text.contains("const AGENT = \"pi\";"))
         #expect(sandbox.configurator().entriesPresent(in: outcome.record))
 
         // The only thing under home is Pi's own directory: no settings edit,

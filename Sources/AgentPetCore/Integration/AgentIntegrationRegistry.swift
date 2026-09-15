@@ -60,8 +60,9 @@ public enum IntegrationMechanism: String, Codable, Sendable, Equatable {
     /// exactly the lines that were recorded.
     case hookTable
     /// One file the runtime owns outright, in a directory the agent scans —
-    /// Oh My Pi's extensions. Installing is a write, removing is a delete, and
-    /// the file is only touched while it still identifies itself as ours.
+    /// Pi's and Oh My Pi's extensions. Installing is a write, removing is a
+    /// delete, and the file is only touched while it still identifies itself as
+    /// ours.
     case extensionFile
 }
 
@@ -206,10 +207,10 @@ public enum AgentIntegrationRegistry {
         )
     }
 
-    /// Oh My Pi is the one agent here that is extended by a *file*: it loads
-    /// every `*.ts` in `~/.omp/agent/extensions/` at session start, so the
-    /// integration is one file the runtime owns outright rather than lines
-    /// inside a file somebody else owns. Installing it is a write, removing it
+    /// Oh My Pi is one of the two agents here extended by a *file* (Pi is the
+    /// other): it loads every `*.ts` in `~/.omp/agent/extensions/` at session
+    /// start, so the integration is one file the runtime owns outright rather
+    /// than lines inside a file somebody else owns. Installing it is a write, removing it
     /// is a delete, and nothing in omp's own configuration is touched.
     ///
     /// It is also why the note below is absent: this agent *is* configurable.

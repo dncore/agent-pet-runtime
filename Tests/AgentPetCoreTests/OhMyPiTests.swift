@@ -13,7 +13,7 @@ private func ompEnvelope(event: String, extra: String = "") -> BridgeEnvelope {
         eventName: event,
         receivedAt: ompEventEpoch,
         proc: BridgeProcessInfo(pid: 2, ppid: 1, tty: "/dev/ttys004"),
-        rawPayload: Data(#"{"sessionId":"s1","cwd":"/tmp/proj""#.utf8)
+        rawPayload: Data(#"{"session_id":"s1","cwd":"/tmp/proj""#.utf8)
             + Data(extra.utf8)
             + Data("}".utf8)
     )
@@ -49,16 +49,21 @@ struct OhMyPiNormalizationTests {
         let profile = AgentProfiles.profile(for: "omp")
         let known = Set((profile?.rules ?? []).flatMap(\.matches))
 
-        for event in AgentPetExtension.reportedEvents {
+        // Every event the file listens for is one the profile knows.
+        for event in AgentPetExtension.listenedEvents {
             #expect(source.contains("pi.on(\"\(event)\""), "\(event) is listed but never registered")
+        }
+        // And every event it *sends* has a rule, including the context reading
+        // that rides out of the settle handler.
+        for event in AgentPetExtension.reportedEvents {
             #expect(known.contains(event), "\(event) is reported but no rule mentions it")
         }
 
-        // And nothing is registered behind the list's back.
+        // Nothing is registered behind the list's back.
         let registered = source.components(separatedBy: "pi.on(\"").dropFirst().compactMap { chunk in
             chunk.split(separator: "\"").first.map(String.init)
         }
-        #expect(Set(registered) == Set(AgentPetExtension.reportedEvents), "registered: \(registered)")
+        #expect(Set(registered) == Set(AgentPetExtension.listenedEvents), "registered: \(registered)")
     }
 
     @Test("the ask tool is the one tool that means the agent is blocked on you")
