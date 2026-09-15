@@ -19,10 +19,23 @@ public enum EventCapture {
     ///
     /// Each is here because some diagnosis needs it. Anything whose value is
     /// user content is not, however useful it might be for debugging.
+    ///
+    /// Two spellings of the same two facts, because two agents name them
+    /// differently: Claude Code's hooks send `session_id` / `tool_name`, while
+    /// the in-process extensions send the camelCase names their own API uses
+    /// (`sessionId` / `toolName` — Pi's extension uses the camelCase tool name
+    /// next to the snake-case session id today). Missing a spelling is not
+    /// cosmetic: an event spooled without its session id replays as a second
+    /// row under a process-derived name, beside the real one. The list stays
+    /// hand-written rather than derived from the profiles — a profile's
+    /// `summaryField` is the user's own prompt on `UserPromptSubmit`, and an
+    /// allowlist that followed profiles would follow prompts onto disk.
     public static let capturableKeys: Set<String> = [
         "session_id",       // opaque id; tells concurrent sessions apart
+        "sessionId",        // the same, as the in-process extensions spell it
         "hook_event_name",
         "tool_name",        // "Bash", "Read" — a label, not content
+        "toolName",         // the same, as the in-process extensions spell it
         "notification_type",
         "permission_mode",
         "cwd",

@@ -92,6 +92,45 @@ struct EventSpoolTests {
         #expect(!text.contains("I read the file"), "model output is not ours to keep")
     }
 
+    @Test("a payload written in an extension's own spelling keeps its identity")
+    func extensionSpellingKeepsItsIdentity() throws {
+        // The regression this exists for: the allowlist knew only Claude Code's
+        // `session_id` / `tool_name`, so an event spooled from an in-process
+        // extension — those send the camelCase names their own API uses — lost
+        // its session, and replaying it after a restart drew that session under
+        // a process-derived name, beside the real one.
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        EventSpool.write(
+            BridgeEnvelope(
+                agentID: "pi",
+                eventName: "tool_execution_start",
+                receivedAt: origin,
+                proc: BridgeProcessInfo(pid: 100, ppid: 50, tty: nil),
+                rawPayload: (try? JSONSerialization.data(withJSONObject: [
+                    "sessionId": "01a0a2d8-1028-7000-a617-ffb53b950be5",
+                    "cwd": "/tmp/project",
+                    "toolName": "bash",
+                    "args": ["command": "cat ~/.ssh/id_rsa"],
+                    "text": "the user's own words",
+                ])) ?? Data()
+            ),
+            to: directory
+        )
+
+        var replayed: [BridgeEnvelope] = []
+        EventSpool.drain(from: directory) { replayed.append($0) }
+        let text = String(decoding: try #require(replayed.first).rawPayload, as: UTF8.self)
+
+        #expect(text.contains("01a0a2d8-1028-7000-a617-ffb53b950be5"),
+                "a replayed event must keep its own session, not fall back to a pid")
+        #expect(text.contains("bash"), "the tool name is a label, not content")
+        // And the added spellings did not open the door to content.
+        #expect(!text.contains("id_rsa"), "tool arguments are not ours to keep")
+        #expect(!text.contains("the user's own words"), "prompt text is not ours to keep")
+    }
+
     @Test("a burst cannot grow the spool without bound")
     func capHolds() throws {
         let directory = try makeDirectory()
