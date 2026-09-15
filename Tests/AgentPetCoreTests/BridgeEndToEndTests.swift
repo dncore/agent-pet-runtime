@@ -89,6 +89,11 @@ struct BridgeEndToEndTests {
     /// The spool is always redirected to a throwaway directory, so a test that
     /// deliberately runs the shim with no runtime listening cannot leave
     /// files in the user's real Application Support directory.
+    ///
+    /// `payloadViaEnvironment` models an in-process reporter, which hands the
+    /// payload over in the environment and leaves stdin as a pipe nobody ever
+    /// writes to or closes. A shim that still depended on stdin would deliver
+    /// an empty payload here, which is exactly the failure this covers.
     @discardableResult
     private func runShim(
         socket: URL,
@@ -96,7 +101,8 @@ struct BridgeEndToEndTests {
         event: String,
         payload: String,
         spool: URL? = nil,
-        extraArguments: [String] = []
+        extraArguments: [String] = [],
+        payloadViaEnvironment: Bool = false
     ) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: ShimBinary.path!)
@@ -107,6 +113,9 @@ struct BridgeEndToEndTests {
         var environment = ProcessInfo.processInfo.environment
         environment["AGENTPET_SOCKET"] = socket.path
         environment["AGENTPET_SPOOL"] = spoolDirectory.path
+        if payloadViaEnvironment {
+            environment["AGENTPET_PAYLOAD_BASE64"] = Data(payload.utf8).base64EncodedString()
+        }
         process.environment = environment
 
         let input = Pipe()
@@ -115,8 +124,10 @@ struct BridgeEndToEndTests {
         process.standardError = Pipe()
 
         try process.run()
-        input.fileHandleForWriting.write(Data(payload.utf8))
-        input.fileHandleForWriting.closeFile()
+        if !payloadViaEnvironment {
+            input.fileHandleForWriting.write(Data(payload.utf8))
+            input.fileHandleForWriting.closeFile()
+        }
         process.waitUntilExit()
         return process.terminationStatus
     }
@@ -229,6 +240,86 @@ struct BridgeEndToEndTests {
         }
         close(fd)   // the file stays; nothing answers on it any more
         try #require(bound == 0)
+    }
+
+    @Test("a payload handed over in the environment arrives without any use of stdin")
+    func environmentPayload() async throws {
+        // The regression this exists for: Oh My Pi's extension spawns the shim
+        // from inside the agent's own runtime, so its write to a pipe is queued
+        // on an event loop the agent may be holding. A busy stretch of 30ms
+        // between spawn and write was enough for the shim's stdin deadline to
+        // expire, and the event then arrived with no session id — a row the pet
+        // could never fill. The environment is delivered at spawn, not written
+        // afterwards, so there is no deadline to miss.
+        let box = EnvelopeBox()
+        let (server, socket) = try makeServer(box)
+        defer { server.stop() }
+
+        let payload = #"{"sessionId":"env-1","cwd":"/tmp/project"}"#
+        let status = try runShim(
+            socket: socket,
+            agent: "omp",
+            event: "agent_start",
+            payload: payload,
+            payloadViaEnvironment: true
+        )
+        #expect(status == 0)
+        #expect(await waitForEnvelopes(box, count: 1), "no envelope arrived")
+
+        let envelope = try #require(box.envelopes.first)
+        #expect(envelope.agentID == "omp")
+        #expect(envelope.payloadUTF8 == payload, "the payload did not survive the environment")
+
+        let events = EventNormalizer(profiles: AgentProfiles.all).normalize(envelope)
+        #expect(events.first?.sessionID == "env-1")
+        #expect(events.first?.focusTarget?.path == "/tmp/project")
+    }
+
+    @Test("a real shim event from Oh My Pi drives the pet's state machine")
+    func ohMyPiReachesTheEngine() async throws {
+        // The whole chain for the new agent, with no stand-ins on either side:
+        // the shipped extension's payload shape, the real shim, a real bridge,
+        // the real normalizer, and the activity engine that decides what the
+        // pet shows.
+        let box = EnvelopeBox()
+        let (server, socket) = try makeServer(box)
+        defer { server.stop() }
+
+        let clock = ManualActivityClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let engine = ActivityEngine(clock: clock)
+        let normalizer = EventNormalizer(profiles: AgentProfiles.all)
+        var expected = 0
+
+        func send(event: String, extra: String = "") async throws -> AgentEvent? {
+            let payload = #"{"sessionId":"omp-session","cwd":"/tmp/project""# + extra + "}"
+            try runShim(
+                socket: socket, agent: "omp", event: event,
+                payload: payload, payloadViaEnvironment: true
+            )
+            // The shim has exited, but the server appends on its own thread.
+            expected += 1
+            let arrived = await waitForEnvelopes(box, count: expected)
+            #expect(arrived, "no envelope arrived for \(event)")
+            guard let envelope = box.envelopes.last else { return nil }
+            return normalizer.normalize(envelope).first
+        }
+
+        let started = try await send(event: "agent_start")
+        #expect(started?.kind == .working)
+        if let started { engine.ingest(started) }
+        #expect(engine.currentFocus()?.state == .running)
+
+        // The ask tool is a question put to the user: the pet must say so.
+        let asking = try await send(event: "tool_execution_start", extra: #","toolName":"ask""#)
+        #expect(asking?.kind == .waitingInput)
+        if let asking { engine.ingest(asking) }
+        #expect(engine.currentFocus()?.state == .waitingInput)
+        #expect(engine.currentFocus()?.toolName == "ask")
+
+        // Answering it ends that tool call, and the agent carries on.
+        let answered = try await send(event: "tool_execution_end", extra: #","toolName":"ask""#)
+        if let answered { engine.ingest(answered) }
+        #expect(engine.currentFocus()?.state == .running)
     }
 
     @Test("a payload sent by the real shim arrives as a usable agent event")

@@ -92,6 +92,52 @@ struct EventSpoolTests {
         #expect(!text.contains("I read the file"), "model output is not ours to keep")
     }
 
+    @Test("an Oh My Pi event keeps the identity it was spooled with")
+    func ohMyPiPayloadKeepsItsSession() throws {
+        // The regression this exists for (2026-09-15): Oh My Pi's extension
+        // names the session `sessionId`, and the allowlist only knew Claude
+        // Code's `session_id`. An event that arrived while the app was down
+        // was spooled without its session, so replaying it after the restart
+        // drew the session under a process-derived name — a second row for a
+        // session that was already on screen under its real one.
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        EventSpool.write(
+            BridgeEnvelope(
+                agentID: "omp",
+                eventName: "tool_execution_start",
+                receivedAt: origin,
+                proc: BridgeProcessInfo(pid: 100, ppid: 50, tty: nil),
+                rawPayload: (try? JSONSerialization.data(withJSONObject: [
+                    "sessionId": "01a0a2d8-1028-7000-a617-ffb53b950be5",
+                    "cwd": "/tmp/project",
+                    "toolName": "ask",
+                    "args": ["question": "cat ~/.ssh/id_rsa"],
+                    "text": "the user's own words",
+                ])) ?? Data()
+            ),
+            to: directory
+        )
+
+        var replayed: [BridgeEnvelope] = []
+        EventSpool.drain(from: directory) { replayed.append($0) }
+        let restored = try #require(replayed.first)
+
+        let event = try #require(
+            EventNormalizer(profiles: AgentProfiles.all).normalize(restored).first
+        )
+        #expect(event.sessionID == "01a0a2d8-1028-7000-a617-ffb53b950be5",
+                "a replayed event must keep its own session, not fall back to a pid")
+        #expect(event.kind == .waitingInput)
+        #expect(event.toolName == "ask")
+
+        // And the two added keys did not open the door to content.
+        let text = String(decoding: restored.rawPayload, as: UTF8.self)
+        #expect(!text.contains("id_rsa"), "tool arguments are not ours to keep")
+        #expect(!text.contains("the user's own words"), "prompt text is not ours to keep")
+    }
+
     @Test("a burst cannot grow the spool without bound")
     func capHolds() throws {
         let directory = try makeDirectory()

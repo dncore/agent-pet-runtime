@@ -16,7 +16,8 @@ Claude Code 弹权限请求，它抬爪子。任务做完，它庆祝一下再�
    Claude Code ─┐
    Codex       ─┤          spawn            ┌──────────────┐
    Grok        ─┼──────► agentpet-hook ───►│    socket    │
-   Pi          ─┘          (~5 ms)         └──────┬───────┘
+   Pi          ─┤          (~5 ms)         └──────┬───────┘
+   Oh My Pi    ─┘                                 │
                                                   │
                        ┌──────────────────────────▼──────────────────────┐
                        │  归一化 → Activity 引擎 → 动画 → 宠物           │
@@ -74,17 +75,17 @@ swift run AgentPet --unconfigure claude-code   # 精确移除它写过的东西
 
 **不需要重启。** Claude Code 在**每次派发 hook 时**重新读取 `~/.claude/settings.json`，所以会话运行中途加的 hook 下一个事件就生效，正在跑长任务的会话不会被打断。（实测方式：给一个已经跑了好几个小时的会话新增 `SubagentStart`/`SubagentStop`，然后看它们触发。）
 
-五个 agent 现在都可配置。Codex 多一步：它的 hooks 要你在 Codex 自己的 `/hooks` 面板里 review 并信任一次才会生效——配置完成的那一刻，运行时会直接把这句话打给你。
+六个 agent 现在都可配置。Codex 多一步：它的 hooks 要你在 Codex 自己的 `/hooks` 面板里 review 并信任一次才会生效——配置完成的那一刻，运行时会直接把这句话打给你。
 
 ### 配置到底做了什么
 
-配置做什么因 agent 而异，除此之外一概不碰：Claude Code 是往 `~/.claude/settings.json` 加 hook 行；Grok 是写运行时自己的 `~/.grok/hooks/agentpet.json`（移除时整个删掉），并在 `~/.grok/config.toml` 末尾追加一个开关 `[compat.claude] hooks = false`——否则 Grok 的 Claude 兼容扫描会把 Claude 的 hook 再放一遍；Pi 是写运行时自己的一个 TypeScript 扩展 `~/.pi/agent/extensions/agentpet.ts`（同样删除即卸载）；Codex 是往 `~/.codex/hooks.json` 加 hook 行，与已有条目合并（比如 Otty 的四条原样保留，卸载时也只删自己写的）；Antigravity 是往 `~/.gemini/config/hooks.json` 写一个命名钩子（工具事件用 matcher 分组、其余事件是扁平 handler 列表——它的 schema 并不统一），与其它命名钩子合并、卸载只删自己：
+配置做什么因 agent 而异，除此之外一概不碰：Claude Code 是往 `~/.claude/settings.json` 加 hook 行；Grok 是写运行时自己的 `~/.grok/hooks/agentpet.json`（移除时整个删掉），并在 `~/.grok/config.toml` 末尾追加一个开关 `[compat.claude] hooks = false`——否则 Grok 的 Claude 兼容扫描会把 Claude 的 hook 再放一遍；Pi 是写运行时自己的一个 TypeScript 扩展 `~/.pi/agent/extensions/agentpet.ts`（同样删除即卸载）；Oh My Pi 同理，写 `~/.omp/agent/extensions/agentpet.ts`（同样删除即卸载；装完要新起一个 omp 会话才生效，正在跑的那个不算）；Codex 是往 `~/.codex/hooks.json` 加 hook 行，与已有条目合并（比如 Otty 的四条原样保留，卸载时也只删自己写的）；Antigravity 是往 `~/.gemini/config/hooks.json` 写一个命名钩子（工具事件用 matcher 分组、其余事件是扁平 handler 列表——它的 schema 并不统一），与其它命名钩子合并、卸载只删自己：
 
 - **先备份。** 动笔之前先把原文件复制到运行时备份目录。
 - **原子写入。** 写临时文件再 rename，读者要么看到旧文件要么看到新文件，不会看到写了一半的。
 - **幂等。** 连点两次 Configure 什么都不会变。
-- **可逆。** Remove Integration 只删运行时自己写的行。**其他工具的 hook 行原样保留**——而你机器上通常有好几个；追加的开关按字节精确删回。
-- **检测并发修改。** 文件的主人自己也会写它。如果读和写之间它变了，就放弃这次编辑而不是覆盖它。
+- **可逆。** Remove Integration 只删运行时自己写的行。**其他工具的 hook 行原样保留**——而你机器上通常有好几个；追加的开关按字节精确删回。扩展文件则整个删掉，且只在文件里还留着记录中那行标记时才删：把那行换掉、或同名换成你自己写的文件，运行时不会碰它。两种情况都先留一份备份，所以即使你在它基础上加过东西也拿得回来。
+- **检测并发修改。** 文件的主人自己也会写它。如果读和写之间它变了，就放弃这次编辑而不是覆盖它。扩展文件没有第二个写入方：它只校验是不是运行时自己写的、原子写入、再读回验证。
 
 它永远不碰模型配置、凭据和 prompt。
 
@@ -113,6 +114,29 @@ Agent 状态是一个由 hook 事件驱动的小型状态机。**映射是最容
 **子 Agent 在跑的时候 `Stop` 会撒谎。** 主 Agent 让出控制权就触发 `Stop`，而后台子 Agent 可能还在干活。payload 里的 `background_tasks` 如果还有 running 的，说明这一轮没结束。
 
 **Grok 会读 Claude Code 的配置，所以运行时把这个扫描关掉。** Grok Build 会扫描并信任 `~/.claude/settings.json`，那会让每个 Grok 事件被 Claude 的 hook 再放一遍。配置 Grok 时会往 `~/.grok/config.toml` 追加 `[compat.claude] hooks = false`，并改为安装 Grok 自己的 hooks 文件。shim 仍检测 `GROK_HOOK_NAME`，万一仍有扫描来的事件也会被改判成 Grok。
+
+### Oh My Pi 的映射
+
+Oh My Pi 没有 hook 表，所以上面那张表是 Claude Code 的。运行时装的扩展上报八个事件，映射如下：
+
+| 扩展说 | 宠物显示 | 依据 |
+|---|---|---|
+| `tool_approval_requested` | **等待** | 工具被扣住等你批准——对应 Claude Code 的权限提示 |
+| `tool_execution_start` 且 toolName 是 `ask` | **等待** | `ask` 工具本身就是问用户一个问题，不答就走不下去 |
+| `agent_start`、其他工具调用 | 工作中 | 正在干活 |
+| `tool_execution_end` / `tool_approval_resolved` | 工作中 | 也是你答完问题、或审批通过后，把宠物从「等待输入」上取下来的信号 |
+| `agent_end` | 庆祝一下，然后发呆 | 每轮 prompt 触发一次；payload 里 `willContinue` 为真时说明已经排好了重试，这时不报 |
+| `session_start` | *(不出行)* | 与 Claude Code 同理：只说明有进程启动，会话在第一个真实事件时出现 |
+| `session_shutdown` | *(移除)* | 会话结束 |
+
+故意不映射的：`turn_start`/`turn_end`（Oh My Pi 的一个 turn 是一次模型调用，不是一轮 prompt，所以 turn 边界不代表干完了一段活），以及各种 message 事件（它们携带模型输出，本项目根本不读）。
+
+这个扩展有两个值得知道的性质，都写在装出来的文件里：
+
+**它只上报，永不设卡。** 它没有注册任何能拦截工具、改写参数或代答审批的 handler，每一步都包了 try/catch，出错也传不到 Agent 身上。它唯一会改变的东西也写明了：只要**任意扩展**在处理四个工具生命周期事件（`tool_call`、`tool_result`、`tool_approval_requested`、`tool_approval_resolved`）之一，Oh My Pi 就会跳过实验性推测本地读（`tools.speculativeExecution.enabled`，默认关闭）；本文件占的是后两个——审批之所以能显示成 **Needs input**，靠的正是它们。删掉文件即恢复。
+
+**它的 payload 走环境变量，不走管道。** 这个扩展跑在 Agent 自己的运行时里，往管道写数据的动作要排在事件循环上，而 Agent 可能正占着它。本机实测：spawn 之后忙等 30ms 再写，就足以让 shim 的 stdin 等待超时，事件到达时**没有任何 session id**——宠物上会出现一行永远填不上的东西。环境变量由内核在 spawn 时交给子进程，没有可迟到的余地。（见 `Sources/agentpet-hook/main.swift` 里的 `AGENTPET_PAYLOAD_BASE64`，以及覆盖它的测试。）
+
 
 ---
 
@@ -180,6 +204,8 @@ shim 跑在 Agent 的关键路径上，每次工具调用一次，所以这个�
 
 运行时读取 session id、工作目录、事件名。它**不读** prompt、模型输出、源码——不是过滤掉，是根本不读。写到磁盘的集成记录里只有 hook 命令和时间戳，没别的。
 
+Oh My Pi 的扩展从另一侧遵守同一份白名单：运行时装进去的文件每个事件只发 session id、工作目录和工具名，里面没有任何一行代码会碰 prompt、工具参数或输出。
+
 App 没运行时（重启，或 `brew upgrade` 替换 bundle 的那几秒），hook 会把未送达的事件写进 `pending-events/`，供下次启动回放。这些文件与事件日志同一条白名单（session id、目录、事件名与工具**名**；绝不包含 prompt、参数、输出、源码），权限 `0600`，上限 200 条，回放后即删。
 
 `--log-events` 会写诊断抓包，**默认关闭**。它只保留诊断需要的字段，丢弃 `tool_input`、`tool_response`、`transcript_path`——用的是白名单，所以未来 Agent 版本新增的字段也不会默认泄漏进日志。文件权限 `0600`。
@@ -232,12 +258,11 @@ Sources/agentpet-hook/    Agent 执行的 shim。必须永远 exit 0。
 | 收纳 / 唤醒宠物 | 完成——菜单栏项，跨重启记住 |
 | 事件桥接，已对着真实二进制验证 | 完成 |
 | Pet Manager：列出 Codex 的宠物、预览、选用 | 完成——只读；宠物由 Codex 自己的工具链安装 |
-| Agent 集成：检测、配置、移除 | **仅 Claude Code** |
+| Agent 集成：检测、配置、移除 | Claude Code、Grok、Pi、Codex、Antigravity 与 Oh My Pi |
 | Activity Center、设置、诊断导出 | 完成 |
 | 会话面板：每会话一行，各项可配置 | 完成 |
 | 上下文占用（读取 Claude Code 状态栏） | 完成——可选开启，包裹你已有的状态栏命令 |
 | 重启/升级后不丢回合中的会话 | 完成——未送达事件在下次启动时回放 |
-| Grok / Codex / Pi 配置 | 未做——各自需要专属配置器（TOML、argv 数组、扩展包） |
 | 聚焦到终端窗口 | 改为打开项目目录；hook payload 里没有终端标识 |
 
 ---

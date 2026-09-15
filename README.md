@@ -19,7 +19,8 @@ bridge is measured and bounded, and nothing is recorded that should not be.
    Claude Code ─┐
    Codex       ─┤          spawns          ┌──────────────┐
    Grok        ─┼──────► agentpet-hook ───►│    socket    │
-   Pi          ─┘          (~5 ms)         └──────┬───────┘
+   Pi          ─┤          (~5 ms)         └──────┬───────┘
+   Oh My Pi    ─┘                                 │
                                                   │
                        ┌──────────────────────────▼──────────────────────┐
                        │  normalize → activity engine → animation → pet  │
@@ -81,7 +82,7 @@ Sessions running long jobs are not interrupted. (Verified by adding
 `SubagentStart`/`SubagentStop` to a session that had been running for hours and
 watching them fire.)
 
-All five agents are configurable today. Codex's hooks carry one extra step:
+All six agents are configurable today. Codex's hooks carry one extra step:
 Codex skips a hook until you review and trust it in Codex's own `/hooks`
 panel, and the runtime says so — and nothing else about the pet — the moment
 it configures them.
@@ -95,11 +96,15 @@ plus one appended switch, `[compat.claude] hooks = false` in
 `~/.grok/config.toml`, which stops Grok's Claude-compatibility scan from
 firing the Claude hooks a second time. Pi gets one TypeScript extension of the
 runtime's own, `~/.pi/agent/extensions/agentpet.ts`, also deleted on removal.
-Codex gets hook lines in `~/.codex/hooks.json`, merged around whatever is
-already there — other tools' hooks are left alone, and so are they on
-removal. Antigravity gets one named hook in `~/.gemini/config/hooks.json`,
-merged around any other named hooks (its schema is not uniform: tool events
-take matcher groups, the rest take flat handler lists):
+Oh My Pi gets the same shape of file at
+`~/.omp/agent/extensions/agentpet.ts` — one extension the runtime owns
+outright, taken back on removal, and in force from the next session rather
+than the running one. Codex gets hook lines in `~/.codex/hooks.json`, merged
+around whatever is already there — other tools' hooks are left alone, and so
+are they on removal. Antigravity gets one named hook in
+`~/.gemini/config/hooks.json`, merged around any other named hooks (its schema
+is not uniform: tool events take matcher groups, the rest take flat handler
+lists):
 
 - **Backed up first.** The previous file is copied to the runtime's backup
   directory before anything is written.
@@ -108,9 +113,15 @@ take matcher groups, the rest take flat handler lists):
 - **Idempotent.** Running Configure twice changes nothing.
 - **Reversible.** Remove Integration deletes only the lines the runtime wrote.
   Hook lines belonging to other tools — and there are usually several — are
-  left alone, and the appended switch is removed byte for byte.
-- **Concurrency-aware.** The file's owner writes it too. If it changes
-  between read and write, the edit is abandoned rather than clobbering it.
+  left alone, and the appended switch is removed byte for byte. An extension
+  file is deleted whole, and only while it still carries the marker line the
+  record says was written into it: replace that line, or write your own file
+  under that name, and nothing is touched. A copy is taken first either way, so
+  even a file you had added to comes back.
+- **Concurrency-aware.** The file's owner writes it too. If it changes between
+  read and write, the edit is abandoned rather than clobbering it. An extension
+  file has no second writer to race with: it is checked for the runtime's own
+  marker, written atomically and read back.
 
 It never touches model settings, credentials, or prompts.
 
@@ -158,6 +169,46 @@ Configuring Grok appends `[compat.claude] hooks = false` to
 `~/.grok/config.toml` and installs Grok's own hooks file instead. The shim
 still checks `GROK_HOOK_NAME` and would re-label anything the scan delivered
 anyway.
+
+### Oh My Pi's mapping
+
+Oh My Pi has no hook table, so the table above is Claude Code's. The extension
+the runtime installs reports eight events, and they map like this:
+
+| Extension says | Pet shows | Why |
+|---|---|---|
+| `tool_approval_requested` | **waiting** | A tool is held until you approve it — the counterpart of a permission prompt |
+| `tool_execution_start` carrying `ask` | **waiting** | The `ask` tool *is* a question put to you; nothing proceeds until it is answered |
+| `agent_start`, any other tool call | running | Work in progress |
+| `tool_execution_end`, `tool_approval_resolved` | running | Also what takes the pet off *Needs input* once you have answered |
+| `agent_end` | celebrating, then idle | Fires once per prompt — and not when the payload says `willContinue`, which means a retry is already scheduled |
+| `session_start` | *(nothing yet)* | Same reasoning as Claude Code's: a process started, so the session appears at its first real event |
+| `session_shutdown` | *(removed)* | Session over |
+
+Deliberately unmapped: `turn_start`/`turn_end` — Oh My Pi's turn is one model
+call, not one prompt, so a turn boundary is not a finished piece of work — and
+the message events, which carry model output and are not read at all.
+
+Two properties of that extension are worth knowing, and both are stated in the
+file itself:
+
+**It reports and never gates.** It registers no handler that can block a tool,
+rewrite an argument, or answer an approval, and every step is wrapped so a
+failure cannot reach the agent. The one thing it does change is documented: Oh
+My Pi skips its experimental speculative local reads
+(`tools.speculativeExecution.enabled`, off by default) while any extension
+handles one of the four *tool-lifecycle* events — `tool_call`, `tool_result`,
+the two approval events — and this file takes the approval pair, which is what
+shows an approval as **Needs input**. Removing the file restores them.
+
+**Its payload travels in the environment, not down a pipe.** The extension runs
+inside the agent's own runtime, where a write to a pipe waits its turn on an
+event loop the agent may be holding. Measured on this machine: 30ms of a busy
+loop between spawning the shim and writing to it was enough for the shim's
+stdin deadline to expire, and the event then arrived with no session id at all —
+a row the pet could never fill. The environment is handed to a process by the
+kernel at spawn time, so there is nothing to be late for. (`AGENTPET_PAYLOAD_BASE64`
+in `Sources/agentpet-hook/main.swift`, and the test that covers it.)
 
 ---
 
@@ -292,6 +343,11 @@ The runtime reads session ids, working directories, and event names. It does
 read. The integration records it writes to disk contain hook commands and
 timestamps, and nothing else.
 
+The Oh My Pi extension is held to the same allowlist from the other side: the
+file the runtime installs sends a session id and a working directory for every
+event, a tool name on the events that carry one, and there is no code in it
+that touches a prompt, a tool argument, or any output.
+
 When the app is not running — a relaunch, or the moment `brew upgrade` takes to
 replace the bundle — the hook writes undelivered events to `pending-events/`
 so the next launch can pick up where it left off. Those files are held to the
@@ -314,7 +370,7 @@ whole of the network surface — nothing else here talks to anything.
 ## Development
 
 ```bash
-swift build && swift test        # 401 tests
+swift build && swift test        # 471 tests
 swift run AgentPet               # run it
 
 swift run AgentPet --diagnose                      # what pets are discoverable, and why
@@ -361,7 +417,7 @@ corrected specification.
 | Tuck the pet away and wake it again | done — the menu bar item, remembered across launches |
 | Event bridge, verified against the real binary | done |
 | Pet Manager: list Codex's pets, preview, pick one | done — read-only; pets are installed with Codex's own tooling |
-| Agent Integrations: detect, configure, remove | Claude Code, Grok, Pi, Codex, and Antigravity |
+| Agent Integrations: detect, configure, remove | Claude Code, Grok, Pi, Codex, Antigravity, and Oh My Pi |
 | Activity Center, Settings, diagnostics export | done |
 | Session panel: one row per session, configurable items | done |
 | Context usage from the status line | done — opt-in: wraps Claude Code's, hidden row for Grok, plain replacement row for Antigravity |

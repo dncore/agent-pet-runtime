@@ -18,10 +18,10 @@ enum CommandLineTool {
 
     AGENTS
       --status                        Show each agent's detection and integration
-      --configure <agent-id>          Install hooks for an agent
-      --unconfigure <agent-id>        Remove exactly the hooks it wrote
+      --configure <agent-id>          Install the integration for an agent
+      --unconfigure <agent-id>        Remove exactly what it wrote
 
-      Agents: claude-code, grok, codex, pi, antigravity
+      Agents: claude-code, grok, codex, pi, antigravity, omp
 
     DIAGNOSTICS
       --diagnose                      Report what is discoverable, and why
@@ -121,7 +121,9 @@ enum CommandLineTool {
             if let version = detection.version {
                 print("      version:     \(version)")
             }
-            print("      hooks:       \(record.entries.count)")
+            let installed = profile.mechanism == .extensionFile ? "extension:" : "hooks:"
+            print("      " + installed.padding(toLength: 13, withPad: " ", startingAt: 0)
+                  + "\(record.entries.count)")
             print("      last event:  \(record.lastEventAt.map(Self.timestamp) ?? "never")")
             print("      configurable:\(profile.configurator == nil ? " no" : " yes")")
         }
@@ -165,7 +167,7 @@ enum CommandLineTool {
 
             print("\(profile.displayName): \(outcome.didChange ? "configured" : "already configured")")
             print("  shim:   \(shim)")
-            print("  hooks:  \(outcome.record.entries.count)")
+            print("  \(profile.mechanism == .extensionFile ? "file: " : "hooks:")  \(outcome.record.entries.count)")
             for file in outcome.changedFiles { print("  wrote:  \(file)") }
             for backup in outcome.backupURLs { print("  backup: \(backup)") }
             if !outcome.didChange {
@@ -182,6 +184,11 @@ enum CommandLineTool {
                 print("")
                 print("\(path) is not valid JSON. The runtime will not overwrite a file it")
                 print("cannot parse, because doing so would discard whatever is in it.")
+            }
+            if case ConfigurationError.foreignFile(let path) = error {
+                print("")
+                print("\(path) exists but was not written by the runtime, so it is left")
+                print("alone. Move it aside if you want the pet to use that name.")
             }
             return 1
         }
@@ -206,8 +213,35 @@ enum CommandLineTool {
 
             print("\(profile.displayName): \(outcome.didChange ? "integration removed" : "nothing to remove")")
             for file in outcome.changedFiles { print("  wrote:  \(file)") }
-            print("  Only the \(record.entries.count) hook(s) the runtime wrote were removed.")
-            print("  Anything you wrote yourself is untouched.")
+            let wrote = profile.mechanism == .extensionFile
+                ? "the extension file the runtime wrote"
+                : "the \(record.entries.count) hook(s) the runtime wrote"
+            let verb = profile.mechanism == .extensionFile ? "was" : "were"
+            print("  Only \(wrote) \(outcome.didChange ? verb : "would have been") removed.")
+            for backup in outcome.backupURLs { print("  backup: \(backup)") }
+            if profile.mechanism == .extensionFile {
+                // The whole file goes, including anything the user had added to
+                // it — saying "anything you wrote is untouched" here would be
+                // the opposite of what just happened. With nothing to remove
+                // there is no copy either, which is why both sentences live
+                // under the same condition as the `backup:` line above.
+                if outcome.didChange {
+                    print("  The whole file was removed, including anything you had added to it.")
+                    print("  A copy was kept in the backup directory before it went.")
+                } else {
+                    // Four ways to land here, and all of them are real: the file
+                    // is gone, it is not valid UTF-8, its marker line was
+                    // rewritten, or this agent has no record to match against
+                    // (the CLI does not gate on one — only the manager's card
+                    // checks `isConfigured` first). Name them all rather than
+                    // three of four, which would invite "then which is it?".
+                    print("  Nothing was removed. The extension file is missing, is not")
+                    print("  readable as UTF-8, no longer carries the recorded marker, or")
+                    print("  this agent has no recorded marker to look for.")
+                }
+            } else {
+                print("  Anything you wrote yourself is untouched.")
+            }
             return 0
         } catch {
             print("Could not remove the \(profile.displayName) integration: \(error)")

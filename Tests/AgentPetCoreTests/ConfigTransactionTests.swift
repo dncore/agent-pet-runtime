@@ -256,6 +256,39 @@ struct ConfigTransactionBackupTests {
         #expect(kept.count <= 3, "backups grew unbounded: \(kept.count)")
     }
 
+    @Test("a backup taken under a second file name survives the pruning it triggers")
+    func pruningFollowsAgeNotTheFileName() throws {
+        // The regression this exists for (2026-09-15): backups were pruned by
+        // name, and a backup's name starts with the name of the file it came
+        // from — so `agentpet.ts.<ts>` sorted before `settings.json.<ts>` no
+        // matter how new it was. The moment a second integration wrote to this
+        // directory, the backup taken during that very call was the first one
+        // deleted, and the path the caller had just been handed was already
+        // gone. Oh My Pi's extension is exactly that second integration.
+        let sandbox = try Sandbox()
+        let settings = try sandbox.file("settings.json", "{}")
+        let extensionFile = try sandbox.file("agentpet.ts", "// one")
+        let tx = ConfigTransaction(backupDirectory: sandbox.backups, maxBackups: 3)
+
+        for index in 0..<4 {
+            try tx.perform(on: settings) { $0["n"] = index }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        let outcome = try tx.perform(on: settings) { $0["n"] = 4 }
+        // A backup of a non-JSON file goes through snapshot + backUp, which is
+        // exactly what the extension configurator does.
+        let backup = try #require(try tx.backUp(try tx.snapshot(extensionFile)))
+        #expect(FileManager.default.fileExists(atPath: backup.path),
+                "the backup this call reported was pruned by the same call")
+        #expect(outcome.didChange)
+
+        let kept = (try? FileManager.default.contentsOfDirectory(
+            at: sandbox.backups, includingPropertiesForKeys: nil
+        )) ?? []
+        #expect(kept.count <= 3, "backups grew past the limit: \(kept.count)")
+    }
+
     @Test("a backup directory that does not exist yet is created")
     func backupDirectoryCreated() throws {
         let sandbox = try Sandbox()
