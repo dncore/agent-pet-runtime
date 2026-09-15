@@ -173,7 +173,8 @@ anyway.
 ### Oh My Pi's mapping
 
 Oh My Pi has no hook table, so the table above is Claude Code's. The extension
-the runtime installs reports eight events, and they map like this:
+the runtime installs listens for eight events — and sends a ninth, the context
+reading it takes at each settle — and they map like this:
 
 | Extension says | Pet shows | Why |
 |---|---|---|
@@ -184,6 +185,7 @@ the runtime installs reports eight events, and they map like this:
 | `agent_end` | celebrating, then idle | Fires once per prompt — and not when the payload says `willContinue`, which means a retry is already scheduled |
 | `session_start` | *(nothing yet)* | Same reasoning as Claude Code's: a process started, so the session appears at its first real event |
 | `session_shutdown` | *(removed)* | Session over |
+| `context_update` (sent at each settle, not an event of its own) | *(described, not moved)* | Model, context usage — the same reduced shape the status-line taps deliver |
 
 Deliberately unmapped: `turn_start`/`turn_end` — Oh My Pi's turn is one model
 call, not one prompt, so a turn boundary is not a finished piece of work — and
@@ -370,7 +372,7 @@ whole of the network surface — nothing else here talks to anything.
 ## Development
 
 ```bash
-swift build && swift test        # 471 tests
+swift build && swift test        # 543 tests
 swift run AgentPet               # run it
 
 swift run AgentPet --diagnose                      # what pets are discoverable, and why

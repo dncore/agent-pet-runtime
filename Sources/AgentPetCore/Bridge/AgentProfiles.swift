@@ -554,7 +554,7 @@ public enum AgentProfiles {
 
     /// Oh My Pi reports through the extension the manager installs into
     /// `~/.omp/agent/extensions/`, which spawns the shim once per event with a
-    /// payload of its own making — `sessionId`, `cwd`, and a `toolName` where
+    /// payload of its own making — `session_id`, `cwd`, and a `toolName` where
     /// one applies. Nothing else is read, so the event names below are the
     /// extension's, not omp's.
     ///
@@ -592,7 +592,7 @@ public enum AgentProfiles {
                 kind: .waitingInput,
                 summaryField: "toolName",
                 toolNameField: "toolName",
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd",
                 whenToolName: "ask"
             ),
@@ -601,7 +601,7 @@ public enum AgentProfiles {
                 kind: .waitingApproval,
                 summaryField: "toolName",
                 toolNameField: "toolName",
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
 
@@ -610,7 +610,7 @@ public enum AgentProfiles {
             NormalizationRule(
                 matches: ["agent_start"],
                 kind: .working,
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
             NormalizationRule(
@@ -618,7 +618,7 @@ public enum AgentProfiles {
                 kind: .working,
                 summaryField: "toolName",
                 toolNameField: "toolName",
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
             // The answer to an `ask` arrives as the end of that tool call, so
@@ -627,7 +627,7 @@ public enum AgentProfiles {
             NormalizationRule(
                 matches: ["tool_execution_end", "tool_approval_resolved"],
                 kind: .working,
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
 
@@ -636,7 +636,7 @@ public enum AgentProfiles {
             NormalizationRule(
                 matches: ["agent_end"],
                 kind: .completed,
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
 
@@ -645,14 +645,23 @@ public enum AgentProfiles {
             NormalizationRule(
                 matches: ["session_start"],
                 kind: .sessionStarted,
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
             ),
             NormalizationRule(
                 matches: ["session_shutdown"],
                 kind: .sessionClosed,
-                sessionIDField: "sessionId",
+                sessionIDField: "session_id",
                 workingDirectoryField: "cwd"
+            ),
+
+            // The reduced reading the extension sends at each settle — session
+            // id, model, how full the context window is. It describes a
+            // session rather than moving it, like the status-line taps.
+            NormalizationRule(
+                matches: ["context_update"],
+                kind: .contextUpdate,
+                sessionIDField: "session_id"
             ),
         ]
     )

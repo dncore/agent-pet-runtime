@@ -12,7 +12,7 @@
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ 外部 Agent 进程（不是我们启动的，在用户自己的终端里）                  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────┐     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐       │
 │  │Codex     │ │Claude    │ │Grok      │ │Pi / Oh My Pi    │       │
 │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────────────┘       │
 │       │notify      │hook        │hook        │TS extension        │
@@ -57,7 +57,7 @@
 
 **关键差异**：Agent 从不连接我们。它们 `fork/exec` 一个 shim，shim 主动写 socket。App 未运行时，shim 把事件**减字段后落盘**（spool），下次启动回放（§5.4）；在此之前这里是"静默丢弃"，代价是升级/重启后宠物对正在运行的会话一无所知。
 
-第四列里的两个 Agent 是同一个家族：Pi 与 Oh My Pi 都是进程内 TS 扩展（后者是前者的重命名分支，扩展 API 相同，只有配置目录不同）。区别在**谁来装**：Pi 的扩展要用户自己装包，本项目只检测；Oh My Pi 的扩展由本项目的配置器写入 `~/.omp/agent/extensions/`，安装即写文件、移除即删文件，见 §8.8。
+第四列里的两个 Agent 是同一个家族：Pi 与 Oh My Pi 都是进程内 TS 扩展（后者是前者的重命名分支，扩展 API 相同，配置目录不同，事件集也不同，见下），也都由本项目的配置器写入各自目录下的一个文件（`~/.pi/agent/extensions/agentpet.ts`、`~/.omp/agent/extensions/agentpet.ts`），安装即写文件、移除即删文件。两者真正的差别是**事件集不同**（Pi 用 `agent_settled` + `ui_prompt_start`，omp 用 `agent_end`(−`willContinue`) + 审批事件），因此生成文件由同一个模板加事件集与所有权标记等显式参数产出，见 §8.8。
 
 ---
 
@@ -95,6 +95,7 @@ agent-pet-runtime/
 │   │   └── Integration/
 │   │       ├── ConfigTransaction.swift
 │   │       ├── ExtensionConfigurator.swift   # 扩展文件类集成（Oh My Pi），见 §8.8
+│   │       ├── ExtensionTemplate.swift       # 两个扩展文件共用的生成模板（事件集与所有权标记为参数）
 │   │       └── IntegrationState.swift
 │   ├── AgentPetApp/                   # AppKit + SwiftUI
 │   └── agentpet-hook/                 # shim CLI
@@ -436,7 +437,7 @@ shim 投递的是**带版本的信封**，不是已解析的事件：
 
 `rawPayload` 用 base64 而非嵌套 JSON 的原因：Agent 的 payload 可能不是合法 JSON（有些 hook 传纯文本），嵌套会导致整个信封解码失败。
 
-**payload 有两个来源，不是一个**（2026-09-15 新增）：hook 类 Agent 按契约把 payload 写在 stdin 上，shim 读它；**进程内的报送方**（Oh My Pi 的扩展，§8.8）改从环境变量 `AGENTPET_PAYLOAD_BASE64` 交给 shim，shim 优先读它。原因是一次实测：扩展跑在 Agent 自己的运行时里，往管道写数据要排在事件循环上，而 Agent 可能正占着它——spawn 之后忙等 30ms 再写，shim 的 stdin 等待（20ms）就已经超时，事件到达时 payload 为空、**没有 session id**，宠物上会多出一行永远填不上的会话。环境变量由内核在 spawn 时交付，没有可迟到的余地；stdin 那条路照旧，Claude Code / Grok / Codex 一个字节都不变。覆盖测试：`BridgeEndToEndTests.environmentPayload`（stdin 保持打开且永不写入，事件仍须完整到达）。
+**payload 有两个来源，不是一个**（2026-09-15 新增）：hook 类 Agent 按契约把 payload 写在 stdin 上，shim 读它；**进程内的报送方**（Pi 与 Oh My Pi 的扩展，§8.8）改从环境变量 `AGENTPET_PAYLOAD_BASE64` 交给 shim，shim 优先读它——两个扩展都跑在 Agent 自己的运行时里，都有同一个竞态。原因是一次实测：扩展跑在 Agent 自己的运行时里，往管道写数据要排在事件循环上，而 Agent 可能正占着它——spawn 之后忙等 30ms 再写，shim 的 stdin 等待（20ms）就已经超时，事件到达时 payload 为空、**没有 session id**，宠物上会多出一行永远填不上的会话。环境变量由内核在 spawn 时交付，没有可迟到的余地；stdin 那条路照旧，Claude Code / Grok / Codex 一个字节都不变。覆盖测试：`BridgeEndToEndTests.environmentPayload`（stdin 保持打开且永不写入，事件仍须完整到达）。
 
 ### 5.1a 实测延迟（2026-09-12，arm64 / macOS 15.7.9）
 
@@ -553,7 +554,7 @@ dedupeKey = hash(agentID, eventName, sessionID, payloadEventID)
 |---|---|---|
 | 位置 | `~/Library/Application Support/AgentPetRuntime/pending-events/` | 与 socket 同目录，测试可用 `AGENTPET_SPOOL` 覆盖 |
 | 内容 | `EventCapture.sanitizedPayload` 减字段后的信封 | **落盘 = 必须过日志同一条白名单**：`session_id`/`sessionId`、cwd、`tool_name`/`toolName`、notification_type 等（两套拼写见下）；prompt、tool_input/response、last_assistant_message 一律不写 |
-| 白名单的两种拼写 | `session_id`/`tool_name`（Claude Code 的 hook）与 `sessionId`/`toolName`（Oh My Pi 扩展，用它自己 API 的命名） | 2026-09-15 实测漏掉第二种的后果：spool 里的 omp 事件丢掉 session id，重启回放时该会话以进程名成行，**和它自己的真实行并列**（一行永远填不上）。白名单刻意保持手写而不从 profile 推导——`UserPromptSubmit` 的 `summaryField` 就是用户 prompt，推导式白名单会把 prompt 一起放上盘 |
+| 白名单的两种拼写 | `session_id`/`tool_name`（Claude Code 的 hook）与 `sessionId`/`toolName`（camelCase 的线协议：Grok 实捕信封如此；Antigravity 用的是 `conversationId` 与嵌套 `toolCall.name`，不在这对里） | 2026-09-15 实测漏掉第二种的后果（收敛前 omp 扩展发的是 `sessionId`）：spool 里的事件丢掉 session id，重启回放时该会话以进程名成行，**和它自己的真实行并列**（一行永远填不上）。白名单刻意保持手写而不从 profile 推导——`UserPromptSubmit` 的 `summaryField` 就是用户 prompt，推导式白名单会把 prompt 一起放上盘 |
 | 权限 | 文件 0600、目录 0700 | 与事件日志同一标准（不用 `Data.write(.atomic)`：原子写会先建临时文件，权限是 umask 而不是我们的） |
 | 上限 | 200 条，超出删最旧 | 文件名前缀是 16 位零填充毫秒时间戳（**不能用 `%016d`**：该格式读 32 位参数，毫秒时间戳会被截断成负数，排序反转、剪枝删掉最新的） |
 | 回放 | 启动时 drain，按 `receivedAt` 升序 | 与实时事件走同一条 `BridgeCoordinator.deliver`，因此计数、`--log-events`、归一化行为完全一致；读完即删 |
@@ -728,7 +729,7 @@ Codex 的设置页有 `Tuck Away Pet` / `Wake Pet`（`petVisible`，默认 true�
 
 ### 6.5d 面板里的 agent 列是字形，管理器窗口的侧边栏开关进了工具栏（2026-09-14）
 
-**agent 列**：原来画的是 `displayName`（"Claude Code" 在 11.5pt semibold 下约 75pt），在默认 112pt 宠物、200% 面板（224pt）里占掉三分之一。改成 **SF Symbols 字形**（claude-code `asterisk`、codex `terminal`、grok `bolt`、pi `function`、omp `sum`、其余 `pawprint`），固定 13pt 宽；完整名字仍在 `Item.primary` 里，供 `--verbose` 的 `[pet] panel:` 行与图像的无障碍描述使用。
+**agent 列**：原来画的是 `displayName`（"Claude Code" 在 11.5pt semibold 下约 75pt），在默认 112pt 宠物、200% 面板（224pt）里占掉三分之一。改成 **SF Symbols 字形**（claude-code `asterisk`、codex `terminal`、grok `bolt`、pi `function`、antigravity `sparkles`、omp `sum`、其余 `pawprint`），固定 13pt 宽；完整名字仍在 `Item.primary` 里，供 `--verbose` 的 `[pet] panel:` 行与图像的无障碍描述使用。
 
 **为什么不用各家 logo**：Claude / OpenAI / xAI 的商标属于各自公司，第三方 app 把它们的标识画进 UI 会同时碰到商标（暗示背书/关联）与美术作品著作权两个问题——这类事要么拿到书面许可，要么别做。SF Symbols 是 Apple 授权给 Apple 平台 app 使用的通用字形，与任何厂商标识都不相像，所以没有这个问题。**同一条规则也适用于其它任何视图**（2026-09-14）：本项目所有 UI 一律不用 emoji，字形只来自 SF Symbols（面板里的 agent 列、管理器 Activity 列、菜单栏兜底图标、菜单里的警告图标）。**这条是决定，不是权宜**：如果将来想用真 logo，先取得许可，别默默换上去。
 
@@ -764,10 +765,10 @@ statusLine.command = "<shim>" --agent claude-code --statusline --original <base6
 | Agent | 版本 | 机制 | 结论 |
 |---|---|---|---|
 | Claude Code | 2.1.268 | `statusLine.command`，stdin 传 JSON（§6.6） | **已实现**：tap 直接读取 |
-| Grok Build | 1.0.24 | `[ui.status_line]`，`type = "command"` 时**同一套 JSON 契约**（二进制内置示例：`echo '{"session_id":"t",...,"context_window":{"used_percentage":25}}' \| ./statusline.sh`），300ms 去抖、启动时读取 `config.toml` | **可对接但未接线**：契约与我们 shim 的 `--statusline` 完全一致（`--agent grok` 即可），但安装需要安全地改写 TOML（`ConfigTransaction` 只懂 JSON），且该用户当前 `[ui.status_line]` 未启用（`type="builtin"` 项无法"包裹"，只能替换）。留待需要时做 |
+| Grok Build | 1.0.24 | `[ui.status_line]`，`type = "command"` 时**同一套 JSON 契约**（二进制内置示例：`echo '{"session_id":"t",...,"context_window":{"used_percentage":25}}' \| ./statusline.sh`），300ms 去抖、启动时读取 `config.toml` | **已接线**：`GrokStatusLine` 往 `config.toml` 追加 `[ui.status_line]`（`type = "command"`，命令打印空以保持终端外观），独立开关，见 §6.7b |
 | Codex | codex-cli 0.153.4 | `tui.status_line = [...]` 只有**内置项**（`context-used` 等，无自定义命令）；`notify` hook 的 payload 不含任何 token 数据 | **不可得**：唯一的替代是读 rollout/transcript，本项目不读 |
-| Pi | @earendil-works/pi-coding-agent | 扩展 API 暴露 `ctx.getContextUsage()`、`ctx.sessionManager.getEntries()`（token 统计）、`ctx.model`（类型定义原文："Context usage on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model"） | **可得但要写扩展**：需要一个 Pi 扩展把 `getContextUsage()` 通过 shim（`--agent pi`）转发给 bridge；未实现 |
-| Oh My Pi | 18.1.22（`@oh-my-pi/pi-coding-agent`） | 与 Pi 同一套扩展 API（`ctx.getContextUsage()` / `ctx.model`），且本项目**已经**为它装了扩展（§8.8） | **未接线（有意）**：现有扩展只发状态事件，不发 `contextUpdate`。接上只需多发一个 `context_update` 事件，但那等于把模型名与 token 统计纳入白名单决策，先不做，而不是顺手做 |
+| Pi | @earendil-works/pi-coding-agent | 扩展 API 暴露 `ctx.getContextUsage()`、`ctx.sessionManager.getEntries()`（token 统计）、`ctx.model`（类型定义原文："Context usage on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model"） | **已接线**：`PiConfigurator` 装入 `~/.pi/agent/extensions/agentpet.ts`（与 Oh My Pi 同源同一个模板），每次结算发一条 `context_update` |
+| Oh My Pi | 18.1.22（`@oh-my-pi/pi-coding-agent`） | 与 Pi 同一套扩展 API（`ctx.getContextUsage()` / `ctx.model`），扩展由本项目装入（§8.8） | **已接线**：与 Pi 的扩展同源同一个模板，每次 settle 也发一条 `context_update`（同一套减字段形状） |
 
 所有 agent 共同的**不做**：不读 transcript、不读 rollout 文件、不猜窗口大小——这正是 Claude Code 的 `used_percentage` 值得专门包一层的原因（网关模型窗口只有它知道）。
 
@@ -780,13 +781,13 @@ statusLine.command = "<shim>" --agent claude-code --statusline --original <base6
 - **Grok Build 1.0.24：可完整接线（事件 + 状态行）。** hooks 的官方载体是 **JSON**：`~/.grok/hooks/*.json`（全局、永远信任、无需项目信任），`config.toml` 内联 `[[hooks.<Event>]]` 只是替代写法（`~/.grok/docs/user-guide/10-hooks.md`）。§6.7 表里"TOML 挡住 Grok"只对**状态行**成立。15 个事件，比 Claude 多 `StopCancelled`（中断）、`PostToolUseFailure`、`PermissionDenied`；`Stop.lastAssistantMessage` 就是面板要的正文（文档原话：hooks 不必解析 transcript）；会话结束时额外一次 `Stop`（`reason != "end_turn"`）必须过滤。信封以 camelCase 为主但**别名并不统一**（实捕，2026-09-15）：`session_id` / `hook_event_name` / `permission_mode` / `transcript_path` 有 snake 别名，tool 事件连 `tool_name` / `tool_input` / `tool_use_id` 都有；而 `lastAssistantMessage` / `backgroundTasks` / `notificationType` 是纯 camelCase。`AgentProfiles.swift` 的 grok profile 已按实捕字段换成独立规则表（2026-09-15 Phase 1；fixtures 在 `Tests/AgentPetCoreTests/Fixtures/grok/`）。
   **compat 是否真的在跑：已定案（2026-09-15 实测）**——headless 会话用假 socket 截获 7 帧，全部经 shim 的 `GROK_HOOK_NAME` 改判以 `agent=grok` 投递（该改判早已在 shim 里，见 §5.1b 附近）。此前"查无痕迹"是因为 hook 成功不写日志、而 grok 无记录文件。**Phase 2 已接线（2026-09-15）**：`GrokConfigurator` 写 `~/.grok/hooks/agentpet.json`（14 个事件，含 `StopCancelled`），并在 `~/.grok/config.toml` 末尾追加 `[compat.claude] hooks = false`（`TOMLSectionEdit` + `ConfigTransaction.performText`：只追加、记录实际追加字节、按字节精确删除；用户自己已写的 `[compat.claude]` 表则拒绝并回滚这次调用写的 hooks 文件）。实机验收：`grok inspect --json` exit 0、`externalCompat` 里 claude/hooks `enabled: false`、14 条属于我们的 hooks 生效、真实会话后 `--status` 显示 Connected；`--unconfigure` 后 `config.toml` **字节级还原**（sha256 前后一致）。
   **Phase 3 状态行已接线（2026-09-15）**：`GrokStatusLine`（独立 record `grok-statusline`、独立开关，同 Claude tap 的 opt-in 原则）往 `config.toml` 追加一个 `[ui.status_line]`（`type = "command"`，命令=`if [ -x shim ]; then shim --agent grok --statusline; fi`——**打印空**，行永不出现，终端外观零变化；自毁保护沿用 Claude tap 的写法）。shim 零改动：`runStatusLineTap` 无 `--original` 时打印空并正常投递，`reducedStatusPayload` 的键与 grok statusline payload 全部同名（实捕核对）。**已知验证边界**：状态行命令只在 TUI 的 agent view 活跃时被调用（官方文档），headless 会话不会触发——本机实测 `grok -p` 只产生钩子帧、无 Statusline 帧。因此这一跳由 shim 侧 e2e（`grokStatusLineMode`：打印空 + 投递 + contextUpdate 归一化）加金样块文本测试覆盖，grok 是否真的调用它属官方文档行为，留待用户的第一次真实 TUI 会话（面板出现 Grok 的 model/context 即验收）。
-  **Pi 已接线（2026-09-15）**：`PiConfigurator` 写运行时独有的 `~/.pi/agent/extensions/agentpet.ts`——纯 JS（node 内建 `child_process`/`path`）、标记头、**无 npm、无 settings 编辑**（Otty 的 `otty-integration.ts` 是同款先例）；卸载先备份再删该文件，且只认标记头——用户自己的文件拒绝覆盖、拒绝删除。扩展**只在结算点报 `agent_settled`**（`agent_end` 之后 Pi 还可能自动重试/压缩/续跑，profile 不再映射 `agent_end`/`turn_end`，改为覆盖扩展实际发送的事件集）；上下文在结算时以 `{session_id, tokens, window, used_percentage, model}` 上报——与状态行 tap 同一归约形状，`used_percentage` 由 `ctx.getContextUsage()` ÷ `ctx.model.contextWindow` 自算。实机验收：真实 pi 会话（headless）经假 socket 截获 5 帧——`session_start` / `agent_start` / `agent_settled` / `context_update`（`{"tokens":6,"model":"Claude Opus 4.8","window":1000000}`）/ `session_shutdown`，模型调用因本机 provider bearer 过期报 401 而未能跑工具；工具分支由**假宿主 harness**（node 直接 drive 已安装的扩展文件）补齐 `tool_execution_start` 帧；真实投递后 `--status` 显示 Connected。**坑**：pi 的 `-p` 非交互模式会等待 stdin EOF——脚本里必须 `< /dev/null`，否则静默挂起。
-  **吸收 PR #1 的三件机制（2026-09-15，作者 CaffreySun，均带回归测试）**：① `ConfigTransaction.pruneBackups` 改按**文件 mtime** 剪枝——按名字剪枝在多来源备份目录里会把本次调用刚生成的备份立刻删掉（`agentpet.json.*` 永远排在 `settings.json.*` 前；本仓库的备份目录从 Grok 接线起就是多来源，属活 bug）；② `EventCapture.capturableKeys` 增加 `sessionId`/`toolName` camelCase 拼写——否则进程内扩展的事件落 spool 时丢 session id、回放时该会话以进程名多出一行填不上的行（白名单仍保持手写、不从 profile 推导，理由见注释）；③ shim 的 payload 增加第二来源 `AGENTPET_PAYLOAD_BASE64`（**stdin 契约一字未动**，钩子类 agent 不受影响）——进程内扩展往管道写数据排在 agent 自己的事件循环上，实测忙 30ms 即错过 shim 的 20ms stdin 等待、事件丢 session id；环境变量在 spawn 时由内核交付，无此竞态。**Pi 扩展已切换到该机制**（模板测试钉住 `AGENTPET_PAYLOAD_BASE64` 且不含 `proc.stdin`）。Oh My Pi 本体支持仍等 PR #1 rebase 后并入。
+  **Pi 已接线（2026-09-15）**：`PiConfigurator` 写运行时独有的 `~/.pi/agent/extensions/agentpet.ts`——纯 JS（node 内建 `child_process`/`path`）、标记头、**无 npm、无 settings 编辑**（Otty 的 `otty-integration.ts` 是同款先例）；卸载先备份再删该文件，且只认标记头——用户自己的文件拒绝覆盖、拒绝删除。扩展（与 Oh My Pi 的扩展同源同一个生成模板，见 §8.8）**只在结算点报 `agent_settled`**（`agent_end` 之后 Pi 还可能自动重试/压缩/续跑，profile 不再映射 `agent_end`/`turn_end`，改为覆盖扩展实际发送的事件集）；上下文在结算时以 `{session_id, tokens, window, used_percentage, model}` 上报——与状态行 tap 同一归约形状，`used_percentage` 由 `ctx.getContextUsage()` ÷ `ctx.model.contextWindow` 自算。实机验收：真实 pi 会话（headless）经假 socket 截获 5 帧——`session_start` / `agent_start` / `agent_settled` / `context_update`（`{"tokens":6,"model":"Claude Opus 4.8","window":1000000}`）/ `session_shutdown`，模型调用因本机 provider bearer 过期报 401 而未能跑工具；工具分支由**假宿主 harness**（node 直接 drive 已安装的扩展文件）补齐 `tool_execution_start` 帧；真实投递后 `--status` 显示 Connected。**坑**：pi 的 `-p` 非交互模式会等待 stdin EOF——脚本里必须 `< /dev/null`，否则静默挂起。
+  **吸收 PR #1 的三件机制（2026-09-15，作者 CaffreySun，均带回归测试）**：① `ConfigTransaction.pruneBackups` 改按**文件 mtime** 剪枝——按名字剪枝在多来源备份目录里会把本次调用刚生成的备份立刻删掉（`agentpet.json.*` 永远排在 `settings.json.*` 前；本仓库的备份目录从 Grok 接线起就是多来源，属活 bug）；② `EventCapture.capturableKeys` 增加 `sessionId`/`toolName` camelCase 拼写——否则进程内扩展的事件落 spool 时丢 session id、回放时该会话以进程名多出一行填不上的行（白名单仍保持手写、不从 profile 推导，理由见注释）；③ shim 的 payload 增加第二来源 `AGENTPET_PAYLOAD_BASE64`（**stdin 契约一字未动**，钩子类 agent 不受影响）——进程内扩展往管道写数据排在 agent 自己的事件循环上，实测忙 30ms 即错过 shim 的 20ms stdin 等待、事件丢 session id；环境变量在 spawn 时由内核交付，无此竞态。**Pi 扩展已切换到该机制**（模板测试钉住 `AGENTPET_PAYLOAD_BASE64`，并断言不含 `child.stdin`）。Oh My Pi 本体支持即 PR #1（本分支）：§8.8 记其扩展文件类集成，§6.7 的 omp 行与两份 README 同步为「已接线」。
   **Codex 已接线（2026-09-15）**：`JSONHookConfigurator` 直接复用——`~/.codex/hooks.json` 与 Claude 的 `settings.json` 是同一 schema（`{"hooks": {"<Event>": [{matcher, hooks: […]}]}}`），写入 12 个事件（`SessionStart/End`、`UserPromptSubmit`、`Pre/PostToolUse`、`PermissionRequest`、`Pre/PostCompact`、`SubagentStart/Stop`、`Stop`、`Interrupt`），与本机 Otty 已有的 4 条条目合并、卸载只删自己。profile 按二进制 wire structs 的字段重写（`session_id`/`hook_event_name`/`model`/`permission_mode`/`tool_*`；`cwd` 见官方字段表；`last_assistant_message` 未承诺——有则预览、无则无）；`Interrupt` → completed；`Notification`/`TaskCompleted`/`StopFailure` 在 Codex 不存在，规则一并去除。新增 `AgentIntegrationProfile.postConfigureHint`：Codex 的信任门是用户自己的动作，configure 后 CLI 与管理器状态栏都会打印 "run /hooks to review and trust them once"。实机验收：`codex doctor` exit 0（22 ok · 0 warn · 0 fail）、合并/卸载/重装全过且 Otty 的条目逐字节保留。**待用户动作**：在 Codex TUI 里 `/hooks` 信任一次事件才会流动；之后可用假 socket 实捕信封，把 fixtures 从"二进制推导"升级为"实捕"。另注意 codex 会自动更新（本机在取证当天 0.153.4 → 0.154.0）。
 - **Pi 0.85.1：可完整接线，改动最小。** 单个 `.ts` 放 `~/.pi/agent/extensions/` 即自动发现、可 `/reload`（pi 包内 `docs/extensions.md`）；只用 node 内建模块，**不需要 npm 包**——registry 旧注"装包是重操作"不成立。事件全覆盖，`ctx.getContextUsage()`（`extensions.md:1066`）给上下文，`ctx.model` 给模型。注意 `agent_settled` 才是"真正停下"（`agent_end` 之后还可能自动重试/压缩/续跑），把完成映射到 `agent_end` 会在这些窗口误报。本机先例：Otty 的 `~/.pi/agent/extensions/otty-integration.ts`（detached spawn、session id 取会话文件 basename，可照抄）。
 - **Codex 0.153.4：事件面已补全，两道坎。** `codex features list` 里 `hooks` 已是 `stable`；官方 hooks 在 `~/.codex/hooks.json`（JSON、Claude 同形 schema 与 payload；事件含 `PermissionRequest` / `Interrupt` / `Subagent*` / `Pre/PostCompact`）。坎一：非托管 hooks 必须在 TUI `/hooks` **人工 review + trust**，按 hook 内容 hash 记录、改动即失效重审，没有程序化信任（openai/codex#21615 仍开放）——"写完了配置"不等于"在跑"；`allow_managed_hooks_only` 之类的企业策略可直接封掉用户钩子。坎二：仍无自定义状态行，§6.7 表里 Codex 那行（面板数据不可得）**继续成立**。另：`~/.codex/hooks.json` 本机已被 Otty 占用（`_otty` 标记），写入必须合并、不碰别人的条目。
 - **Antigravity（2.0 + CLI，2026-05-19 I/O 起）：官方接口存在，但只到"部分"。** 官方 hooks（antigravity.google/docs/hooks）：`hooks.json`，全局 `~/.gemini/config/hooks.json`、工作区 `.agents/`；格式是命名映射（`{"<名>": {"PreToolUse": [...], …}}`），我们只占一个 key，合并与卸载语义最干净；只有 5 个事件：`PreToolUse` / `PostToolUse` / `PreInvocation` / `PostInvocation` / `Stop`。信封带 `conversationId`（=会话 id）、`workspacePaths`、`modelName`；`Stop` 带 `terminationReason`（`model_stop` / `max_steps_exceeded` / `error`，能分完成与失败）和 `fullyIdle`（后台未完，对应 Claude 的 background_tasks 抑制）。**没有 SessionStart/SessionEnd，没有等待输入事件**——宠物画不出"需要你"，这是与 Claude 最主要的差距。官方状态行（/docs/cli/statusline）：`~/.gemini/antigravity-cli/settings.json` 的 `statusLine`（`type = "command"`），payload 含 `session_id`、`model.display_name`、`context_window.used_percentage`——与 Claude 的状态行契约同形，shim 第三度复用。接口还年轻：2026-08 仍在改 hook 排序、同步 hooks、参数改写、compaction 钩子；全局路径近期从 `~/.gemini/antigravity-cli/hooks.json` 修到 `~/.gemini/config/hooks.json`（以装好的版本实测为准）。IDE 2.0 是否读同一 `hooks.json`：文档是产品级、changelog 有 IDE 生命周期 hook 条目，中高置信、待实测。已死的路：VS Code 扩展兼容在 2.0 被移除；语言服务器 `exa.language_server_pb` gRPC（需 CSRF token，本机旧日志可见该服务）是逆向面，**不做**。本机未装 CLI（`agy`，`~/.local/bin/agy`）。
-  **Antigravity 已接线（2026-09-15 实测 + 实现）**：本机装 `agy` 1.2.3 并登录（免费档即可）。**未登录时 `agy -p` 停在鉴权环节、agent 循环不启动、任何 hook 都不触发**（实测：弹 OAuth URL 等 60 秒超时）。捕获用临时探针 hooks.json + 假 socket（事后全部清除、settings.json 按 sha256 逐字节还原），推翻/补足了官方文档：hooks.json 命名映射中**工具事件是 matcher 分组、其余是扁平 handler 列表**；payload 是 protojson camelCase；**`SessionStart` 真实存在**（二进制 proto 有、文档事件表没有，实测触发，载荷只带 common 字段）；**`PostToolUse` 注册但从不触发**（3 个工具 0 次）；`Stop` 的 `terminationReason` 实测为 `NO_TOOL_CALL`（不是文档示例的 `model_stop`），proto 里的 `finalModelOutput` 实捕没有；`ExecutionNum` 恒 0。其他实测：hook 失败 **fail-open**（一次脚本全丢失的运行里 agent 照样 SUCCESS、错误只进日志）；钩子 stdout 契约"必须回 JSON"而 PreToolUse 无 no-op decision——**`{}` 经单命令 allowlist 的工具调用实测为无副作用答案**；钩子进程 cwd = hooks.json 所在目录；环境里注入 `ANTIGRAVITY_CONVERSATION_ID`（shim 据此改判，同 `GROK_HOOK_NAME` 的手法）。实现：`AntigravityConfigurator`（命名钩子 `agentpet`，7 事件，`SessionStart/PreInvocation/PostInvocation/Stop/SessionEnd` 扁平 + `Pre/PostToolUse` 分组）+ profile（点路径读 `toolCall.name`、数组取首读 `workspacePaths[]`、`fullyIdle: false` 抑制完成、`error` 非空判失败、`terminationReason` 不参与过滤）+ shim 对 antigravity 钩子回 `{}`（唯一允许写 stdout 的例外，注释写明契约）+ 状态行 tap（`--render-row` 渲染 `dir │ model │ N% ctx` 替代内置行；**headless 不触发状态行**，TUI 验收留给用户）。规则引擎为它扩了三个通用件：**点路径字段读取、数组取首、`suppressedWhenFalseField`/`requiresNonEmptyField` 两个条件**。实机验收：`--configure antigravity` 写入 hooks.json、真实会话经真 shim 投递 4 帧（SessionStart/PreInvocation/PostInvocation/Stop，全部 `agent=antigravity`）、卸载/重装干净（空文件壳 `{}` 与 grok 同款，注释在案）。
+  **Antigravity 已接线（2026-09-15 实测 + 实现）**：本机装 `agy` 1.2.3 并登录（免费档即可）。**未登录时 `agy -p` 停在鉴权环节、agent 循环不启动、任何 hook 都不触发**（实测：弹 OAuth URL 等 60 秒超时）。捕获用临时探针 hooks.json + 假 socket（事后全部清除、settings.json 按 sha256 逐字节还原），推翻/补足了官方文档：hooks.json 命名映射中**工具事件是 matcher 分组、其余是扁平 handler 列表**；payload 是 protojson camelCase；**`SessionStart` 真实存在**（二进制 proto 有、文档事件表没有，实测触发，载荷只带 common 字段）；**`PostToolUse` 注册但从不触发**（3 个工具 0 次）；`Stop` 的 `terminationReason` 实测为 `NO_TOOL_CALL`（不是文档示例的 `model_stop`），proto 里的 `finalModelOutput` 实捕没有；`executionNum` 恒 0。其他实测：hook 失败 **fail-open**（一次脚本全丢失的运行里 agent 照样 SUCCESS、错误只进日志）；钩子 stdout 契约"必须回 JSON"而 PreToolUse 无 no-op decision——**`{}` 经单命令 allowlist 的工具调用实测为无副作用答案**；钩子进程 cwd = hooks.json 所在目录；环境里注入 `ANTIGRAVITY_CONVERSATION_ID`（shim 据此改判，同 `GROK_HOOK_NAME` 的手法）。实现：`AntigravityConfigurator`（命名钩子 `agentpet`，7 事件，`SessionStart/PreInvocation/PostInvocation/Stop/SessionEnd` 扁平 + `Pre/PostToolUse` 分组）+ profile（点路径读 `toolCall.name`、数组取首读 `workspacePaths[]`、`fullyIdle: false` 抑制完成、`error` 非空判失败、`terminationReason` 不参与过滤）+ shim 对 antigravity 钩子回 `{}`（唯一允许写 stdout 的例外，注释写明契约）+ 状态行 tap（`--render-row` 渲染 `dir │ model │ N% ctx` 替代内置行；**headless 不触发状态行**，TUI 验收留给用户）。规则引擎为它扩了三个通用件：**点路径字段读取、数组取首、`suppressedWhenFalseField`/`requiresNonEmptyField` 两个条件**。实机验收：`--configure antigravity` 写入 hooks.json、真实会话经真 shim 投递 4 帧（SessionStart/PreInvocation/PostInvocation/Stop，全部 `agent=antigravity`）、卸载/重装干净（空文件壳 `{}` 与 grok 同款，注释在案）。
 - §6.7 的旧注里唯一还站得住的：**Codex 的面板数据不可得**。"Grok 是 TOML 所以不能动""Codex 只有 notify""Pi 要装包"三条都已被上面的证据取代。
 
 **接线时的先测清单（行为验证，全部留到实现时）**：Grok compat 是否在实际会话里重放我们的钩子（开 pet 跑一次 grok，看 Activity 是否出现贴错标签的会话）；Codex `Stop` 是否带最后一条助手消息（官方字段表未列，旧版 notify 有 `last-assistant-message`）；Pi 内置权限提示是否走 `ui_prompt_start`；Antigravity 的 IDE 2.0 是否读同一 `hooks.json`、状态行 payload 是否含 cost（2026-08-26 changelog 提到 cost metrics，文档示例未见）。
@@ -1003,11 +1004,11 @@ UI 显示的组合状态：
 另外 `Specification.extraSearchPaths` 此前是个**死字段**（声明、赋值、注释都在，没有读取方），
 现已接上：先扫 agent 自己的 extra，再扫全局表。
 
-### 8.8 扩展文件类集成：Oh My Pi（2026-09-15 新增）
+### 8.8 扩展文件类集成：Pi 与 Oh My Pi（2026-09-15 新增）
 
-前面七节讲的是**改别人的文件**（Claude Code 的 JSON hook 表）。Oh My Pi 是另一类：它每次会话启动时加载 `~/.omp/agent/extensions/*.ts`，所以集成是**一个完全属于运行时的文件**——安装即写、移除即删、不需要解析任何既有格式，也不可能与用户的配置打架。
+前面七节讲的是**改别人的文件**（Claude Code 的 JSON hook 表）。Pi 与 Oh My Pi 是另一类：它们各自在会话启动时加载自己扩展目录下的 `*.ts`（`~/.pi/agent/extensions/`、`~/.omp/agent/extensions/`），所以集成是**一个完全属于运行时的文件**——安装即写、移除即删、不需要解析任何既有格式，也不可能与用户的配置打架。两者共用同一个生成模板（**事件集**与**所有权标记**为参数）。除路径、所有权标记、记录条目、拒绝覆盖时抛出的错误值以及文件头那段代价说明外，本节的 omp 细节对 Pi 同样成立；其余差别只在事件集那张表。
 
-（本机实证：omp 18.1.22，`@oh-my-pi/pi-coding-agent`；扩展加载走 Bun 的原生 import，语法错误只跳过该文件，handler 抛错被框架吞掉并记录。Oh My Pi 是 Pi 的重命名分支，`piConfig.configDir` 从 `~/.pi/agent` 变成 `~/.omp/agent`，扩展 API 完全相同。）
+（本机实证：omp 18.1.22，`@oh-my-pi/pi-coding-agent`；扩展加载走 Bun 的原生 import，语法错误只跳过该文件，handler 抛错被框架吞掉并记录。Oh My Pi 是 Pi 的重命名分支，`piConfig.configDir` 从 `~/.pi/agent` 变成 `~/.omp/agent`，扩展 API 相同，但**事件集不同**——这正是生成文件以事件集为参数的原因。）
 
 #### 文件与所有权
 
@@ -1015,16 +1016,23 @@ UI 显示的组合状态：
 |---|---|
 | 路径 | `~/.omp/agent/extensions/agentpet.ts`（由 `ExtensionFileConfigurator` 决定） |
 | 所有权标记 | 文件头一行固定文本 `// agentpet-runtime extension`——**不含路径、不含版本**，所以 App 搬家后旧文件仍被认作自己的 |
-| 记录的条目 | `WrittenEntry(file:, event: "agentpet.ts", command: "// shim: <shim> --agent omp")`——判据是**这一整行是否还在文件里**，也就是文件是否仍与记录一致。文件里那行被改写（手工改、或被另一次 Configure 换成了别的 shim 路径）→ `entriesPresent` 为假 → 卡片报 disconnected，直到用户重新 Configure。**App 自己搬家不在其中**：记录与文件是同一次 Configure 一起写的，两者会一直一致；本项目没有任何地方拿记录里的路径去和"当前 shim 路径"比对（`record.shimPath` 只在 uninstall 时用于保留原值） |
+| 记录的条目 | `WrittenEntry(file:, event: "agentpet.ts", command: "// shim: <shim> --agent omp")`——判据是**这一整行是否还在文件里**，也就是文件是否仍与记录一致。文件里那行被改写（手工改、或被另一次 Configure 换成了别的 shim 路径）→ `entriesPresent` 为假 → 卡片报 disconnected，直到用户重新 Configure。**App 自己搬家不在其中**：记录与文件是同一次 Configure 一起写的，两者会一直一致；本项目没有任何地方拿记录里的路径去和"当前 shim 路径"比对（omp 这边 `record.shimPath` 只在 uninstall 时用于保留原值；Pi 的记录条目不含路径，其 `entriesPresent` 另读该字段核对文件内容） |
 | 幂等 | 生成文本与磁盘内容逐字节相同 → 不写、不备份、`didChange = false` |
 | 拒绝覆盖 | 目标文件存在但不带所有权标记 → 抛 `ConfigurationError.foreignFile`，原文件一字节不动 |
-| 移除 | 只在文件仍含**记录里那行** `// shim:` 时才删（判据是那一行，不是"文件没被人动过"：用户在其上追加内容并不会让它留下）。删除前先备份（同一个备份目录与命名规则，§8.2），所以连用户追加的部分也能取回。那行被改掉/删掉、或记录为空 → 不删，报 `didChange = false` |
+| 移除 | 只在文件仍含**记录里那行** `// shim:` 时才删（判据是那一行，不是"文件没被人动过"：用户在其上追加内容并不会让它留下）。删除前先备份（走 `ConfigTransaction.backUp`，与 JSON 事务同一个备份目录、同一套命名：`<文件名>.<epoch>.<sha8>`），所以连用户追加的部分也能取回。那行被改掉/删掉，或记录为空（后者仅 omp：Pi 只认文件头的标记行，不看记录）→ 不删，报 `didChange = false` |
 
-生成文本由 `AgentPetExtension.source(agentID:shimPath:)` 拼出（不是随包资源）：能被测试逐条断言，也能在不安装任何东西的情况下读全文——与 `HookSetup.claudeCodeJSON` 同样的理由。写入仍走 `ConfigTransaction.writeAtomically`（临时文件 + `replaceItemAt`）与读回验证，与 JSON 事务同一套纪律。
+生成文本由 `AgentPetExtension.source(agentID:shimPath:)` 拼出（不是随包资源）：能被测试逐条断言，也能在不安装任何东西的情况下读全文——与 `HookSetup.claudeCodeJSON` 同样的理由。它自己只是把参数交给**两个扩展文件共用的模板** `ExtensionTemplate.source(agentID:shimPath:events:marker:)`：两个 Agent 的扩展 API 相同，事件集是显式参数（agent id 与所有权标记也是），其余（shim 调用、会话 id、上下文读数、环境变量通道）全部共享。Pi 的配置器（`PiConfigurator`）走同一个模板的 `.pi` 分支。
+
+| 用途 | Pi 0.85 发 | Oh My Pi 18 发 |
+|---|---|---|
+| "被扣住了" | `ui_prompt_start`（自己的提示框在屏上） | `tool_approval_requested` / `ask` 工具 |
+| 一轮结束 | `agent_settled` | `agent_end`（丢掉 `willContinue` 为真的那些） |
+
+一条普通 `agent_end` 在 Pi 上不是结算（之后还可能自动重试或续跑），而 `agent_settled` 在 omp 18.1.22 里**不存在**（逐事件核对过），所以一个文件不可能同时正确；模板按事件集参数化正是为此。写入走 `ConfigTransaction.performText`（快照 → 备份 → 原子写 → 读回验证 → 失败回滚），与 JSON 事务同一套纪律、同一份代码。
 
 #### 上报什么
 
-八个事件，全部由扩展自己发给 shim（`--agent omp --event <名>`）。payload 只有 `sessionId` 与 `cwd`；带工具名的那几个事件（`tool_execution_start` 与两个审批事件）多一个 `toolName`。
+扩展监听八个事件、发送九个（多出来的是每次结算后那条上下文读数），全部由它自己发给 shim（`--agent omp --event <名>`）。payload 只有 `session_id` 与 `cwd`；带工具名的那几个事件（`tool_execution_start` 与两个审批事件）多一个 `toolName`。
 
 | 扩展发 | 归一化为 | 依据 |
 |---|---|---|
@@ -1034,8 +1042,9 @@ UI 显示的组合状态：
 | `agent_end` | `.completed` | 每轮 prompt 一次；payload 里 `willContinue` 为真（已排好重试）时扩展**不发** |
 | `session_start` | `.sessionStarted` | 引擎按 §4.5b 不建行，只刷新已知会话 |
 | `session_shutdown` | `.sessionClosed` | 会话结束 |
+| `context_update`（结算时发送，不监听事件） | `.contextUpdate` | 只描述会话：模型、上下文占用——与状态行 tap 同一归约形状，不改变状态 |
 
-`whenToolName` 是为这条映射新加的规则条件（`NormalizationRule` 上第二个"仅当某字段等于某值"，另一个是 `whenNotificationType`）：同一事件的窄规则必须排在其通用规则**之前**。
+`whenToolName` 是为这条映射新加的规则条件（`NormalizationRule` 上第三个"仅当某字段等于某值"，前两个是 `whenNotificationType` 与 `whenReason`）：同一事件的窄规则必须排在其通用规则**之前**。
 
 不映射且**故意不订阅**：`turn_start`/`turn_end`（Oh My Pi 的 turn 是一次模型调用，不是一轮 prompt）、`message_*`、`session_compact` 等——后者携带模型输出，而本项目不读模型输出。
 
@@ -1048,7 +1057,7 @@ omp 的扩展是**进程内**的，能改 Agent 行为，所以边界必须写�
 #### 已知边界
 
 - 子代理会话若也派发扩展事件，会作为独立 session 出现在面板上（本项目不读 Agent 内部状态，无法可靠区分主/子会话）；实测 `-p` 模式下未出现。
-- 面板的模型/上下文/费用三项对 Oh My Pi **没有**数据源：扩展虽然拿得到 `ctx.model` 与 `ctx.getContextUsage()`，但本项目当前只发状态、不发 `contextUpdate`（§6.7 的同一结论，未实现）。
+- 面板的**费用**一项对 Oh My Pi 没有数据源（扩展不发 `cost_usd`）；模型与上下文占用随每次结算的 `context_update` 上报（§6.7）。
 - 扩展在**会话启动时**加载：装完要新起一个 omp 会话才生效。UI 的 degraded / disconnected 文案按机制分支，正是为这句话。
 
 #### 真机验证（2026-09-15）
@@ -1107,8 +1116,8 @@ enum RuntimeConstants {
     static let maxBackups      : Int = 10
 
     // 扩展文件类集成（§8.8）
-    static let extensionFileName = "agentpet.ts"                      // ~/.omp/agent/extensions/
-    static let extensionOwnershipMarker = "// agentpet-runtime extension"
+    static let extensionFileName = "agentpet.ts"                      // <agent dir>/extensions/agentpet.ts
+    static let extensionOwnershipMarker = "// agentpet-runtime extension"   // omp 用；Pi 用 "// agentpet-extension v1"
 
     // 校验
     static let maxPackageBytes = 64 * 1024 * 1024

@@ -13,7 +13,7 @@ private func ompEnvelope(event: String, extra: String = "") -> BridgeEnvelope {
         eventName: event,
         receivedAt: ompEventEpoch,
         proc: BridgeProcessInfo(pid: 2, ppid: 1, tty: "/dev/ttys004"),
-        rawPayload: Data(#"{"sessionId":"s1","cwd":"/tmp/proj""#.utf8)
+        rawPayload: Data(#"{"session_id":"s1","cwd":"/tmp/proj""#.utf8)
             + Data(extra.utf8)
             + Data("}".utf8)
     )
@@ -49,16 +49,59 @@ struct OhMyPiNormalizationTests {
         let profile = AgentProfiles.profile(for: "omp")
         let known = Set((profile?.rules ?? []).flatMap(\.matches))
 
-        for event in AgentPetExtension.reportedEvents {
+        // Every event the file listens for is one the profile knows.
+        for event in AgentPetExtension.listenedEvents {
             #expect(source.contains("pi.on(\"\(event)\""), "\(event) is listed but never registered")
+        }
+        // And every event it *sends* has a rule, including the context reading
+        // that rides out of the settle handler.
+        for event in AgentPetExtension.reportedEvents {
             #expect(known.contains(event), "\(event) is reported but no rule mentions it")
         }
 
-        // And nothing is registered behind the list's back.
-        let registered = source.components(separatedBy: "pi.on(\"").dropFirst().compactMap { chunk in
-            chunk.split(separator: "\"").first.map(String.init)
+        // Nothing is registered behind the list's back.
+        let registered = listenedEvents(inGeneratedFile: source)
+        #expect(registered == Set(AgentPetExtension.listenedEvents), "registered: \(registered.sorted())")
+    }
+
+    @Test("the keys the file writes are the keys the profile reads")
+    func payloadKeysMatchTheProfile() throws {
+        // The file and the profile are written separately, and a rename in one
+        // degrades every event to a pid-derived session without any test
+        // noticing. Both of the file's payload builders are checked, not the
+        // whole source: `session_id` appears in each of them, so a rename in
+        // one would otherwise be covered for by the other.
+        let source = AgentPetExtension.source(agentID: "omp", shimPath: aShimPath)
+        let profile = try #require(AgentProfiles.profile(for: "omp"))
+
+        func region(from start: String, to end: String) throws -> String {
+            let lower = try #require(source.range(of: start)?.lowerBound)
+            let upper = try #require(source.range(of: end)?.lowerBound)
+            return String(source[lower..<upper])
         }
-        #expect(Set(registered) == Set(AgentPetExtension.reportedEvents), "registered: \(registered)")
+
+        let lifecycle = try region(
+            from: "function report(event, ctx, toolName) {",
+            to: "// The same reduced shape"
+        )
+        let context = try region(
+            from: "function contextPayload(ctx) {",
+            to: "function reportContext(ctx) {"
+        )
+
+        let fields = Set(
+            profile.rules
+                .flatMap { [$0.sessionIDField, $0.workingDirectoryField, $0.toolNameField] }
+                .compactMap { $0 }
+        )
+        #expect(fields.isSubset(of: ["session_id", "cwd", "toolName"]),
+                "the profile reads a name the file does not write: \(fields.sorted())")
+        // And the other direction: the names are in the payload that carries them.
+        #expect(lifecycle.contains("session_id:") && context.contains("session_id:"),
+                "a payload stopped naming the session the way the profile reads it")
+        #expect(lifecycle.contains("cwd:"), "the lifecycle payload stopped naming the working directory")
+        #expect(lifecycle.contains("payload.toolName"),
+                "the lifecycle payload stopped naming the tool")
     }
 
     @Test("the ask tool is the one tool that means the agent is blocked on you")

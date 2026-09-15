@@ -166,10 +166,18 @@ enum CommandLineTool {
             try store.save(outcome.record)
 
             print("\(profile.displayName): \(outcome.didChange ? "configured" : "already configured")")
-            print("  shim:   \(shim)")
-            print("  \(profile.mechanism == .extensionFile ? "file: " : "hooks:")  \(outcome.record.entries.count)")
-            for file in outcome.changedFiles { print("  wrote:  \(file)") }
-            for backup in outcome.backupURLs { print("  backup: \(backup)") }
+            // One slot, as wide as the longest label here ("extension:"), so
+            // every value in this block starts in the same column — the same
+            // rule --status follows.
+            func field(_ label: String, _ value: String) -> String {
+                "  " + label.padding(toLength: 10, withPad: " ", startingAt: 0) + "  " + value
+            }
+            let installed = profile.mechanism == .extensionFile ? "extension:" : "hooks:"
+
+            print(field("shim:", shim))
+            print(field(installed, "\(outcome.record.entries.count)"))
+            for file in outcome.changedFiles { print(field("wrote:", file)) }
+            for backup in outcome.backupURLs { print(field("backup:", backup)) }
             if !outcome.didChange {
                 print("  (nothing to change — running this again is always safe)")
             }

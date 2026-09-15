@@ -374,7 +374,10 @@ public struct ConfigTransaction: Sendable {
         }
     }
 
-    private func backUp(_ snapshot: ConfigSnapshot) throws -> URL? {
+    /// Not private: the extension-file configurators back a file up through
+    /// the same directory and the same naming, so one retention policy covers
+    /// every edit the runtime makes.
+    func backUp(_ snapshot: ConfigSnapshot) throws -> URL? {
         guard snapshot.existed else { return nil }
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: backupDirectory, withIntermediateDirectories: true)

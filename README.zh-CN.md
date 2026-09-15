@@ -117,7 +117,7 @@ Agent 状态是一个由 hook 事件驱动的小型状态机。**映射是最容
 
 ### Oh My Pi 的映射
 
-Oh My Pi 没有 hook 表，所以上面那张表是 Claude Code 的。运行时装的扩展上报八个事件，映射如下：
+Oh My Pi 没有 hook 表，所以上面那张表是 Claude Code 的。运行时装的扩展监听八个事件、另发一条上下文读数（第九个事件名），映射如下：
 
 | 扩展说 | 宠物显示 | 依据 |
 |---|---|---|
@@ -128,6 +128,7 @@ Oh My Pi 没有 hook 表，所以上面那张表是 Claude Code 的。运行时�
 | `agent_end` | 庆祝一下，然后发呆 | 每轮 prompt 触发一次；payload 里 `willContinue` 为真时说明已经排好了重试，这时不报 |
 | `session_start` | *(不出行)* | 与 Claude Code 同理：只说明有进程启动，会话在第一个真实事件时出现 |
 | `session_shutdown` | *(移除)* | 会话结束 |
+| `context_update`（结算时发送，不是独立监听的事件） | *(只描述，不改变状态)* | 模型与上下文占用——与状态栏 tap 同一归约形状 |
 
 故意不映射的：`turn_start`/`turn_end`（Oh My Pi 的一个 turn 是一次模型调用，不是一轮 prompt，所以 turn 边界不代表干完了一段活），以及各种 message 事件（它们携带模型输出，本项目根本不读）。
 
@@ -217,7 +218,7 @@ App 没运行时（重启，或 `brew upgrade` 替换 bundle 的那几秒），h
 ## 开发
 
 ```bash
-swift build && swift test        # 401 个测试
+swift build && swift test        # 543 个测试
 swift run AgentPet               # 跑起来
 
 swift run AgentPet --diagnose                      # 发现了哪些宠物，以及为什么
