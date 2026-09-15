@@ -4,6 +4,10 @@ public enum ConfigurationError: Error, Equatable, Sendable {
     case unknownAgent(String)
     case noConfigurationTarget(String)
     case transactionFailed(String)
+    /// A file the runtime would have to replace or delete exists, but was not
+    /// written by it. Carries the path. Refusing beats clobbering somebody
+    /// else's file — see `ExtensionFileConfigurator`.
+    case foreignFile(String)
 }
 
 public struct ConfigurationOutcome: Sendable, Equatable {

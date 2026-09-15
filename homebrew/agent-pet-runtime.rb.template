@@ -59,9 +59,11 @@ cask "agent-pet-runtime" do
     anything:
       "#{appdir}/AgentPet.app/Contents/MacOS/AgentPet" --configure claude-code
 
-    Uninstalling does not remove the hooks it wrote into your agents'
-    configuration files. Remove those first, or they will keep running a
-    shim that is no longer installed:
+    Uninstalling does not remove what it installed into your agents — the
+    hook lines it wrote into their configuration files, nor the extension
+    file it put in ~/.omp/agent/extensions. Remove those first, or they will
+    keep running a shim that is no longer installed:
       "#{appdir}/AgentPet.app/Contents/MacOS/AgentPet" --unconfigure claude-code
+      "#{appdir}/AgentPet.app/Contents/MacOS/AgentPet" --unconfigure omp
   EOS
 end

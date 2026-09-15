@@ -552,6 +552,111 @@ public enum AgentProfiles {
         fallbackSessionID: "antigravity-default"
     )
 
+    /// Oh My Pi reports through the extension the manager installs into
+    /// `~/.omp/agent/extensions/`, which spawns the shim once per event with a
+    /// payload of its own making — `sessionId`, `cwd`, and a `toolName` where
+    /// one applies. Nothing else is read, so the event names below are the
+    /// extension's, not omp's.
+    ///
+    /// The mapping against the installed build (18.1.22) is:
+    ///
+    /// - `tool_approval_requested` is omp's approval gate — the one signal
+    ///   that a tool is held up waiting for the user, and the counterpart of
+    ///   Claude Code's `PermissionRequest`.
+    /// - `tool_execution_start` carrying `ask` is the other: omp's `ask` tool
+    ///   is a question put to the user, and the session cannot proceed until
+    ///   it is answered. Every other tool is just work.
+    /// - `agent_end` fires once per prompt, and means a turn is over —
+    ///   *unless* the payload says `willContinue`, which the session sets when
+    ///   it has already scheduled a retry. The extension drops those rather
+    ///   than reporting a settle that never happened.
+    /// - `tool_execution_end` keeps a long tool call from looking idle and is
+    ///   what clears an `ask` wait once the answer lands.
+    /// - Deliberately absent: `turn_start`/`turn_end` (omp's turn is one model
+    ///   call, not one prompt, so both would mean "still working" at best),
+    ///   `message_*`, and the session-tree events. `session_start` is mapped
+    ///   for the same reason Claude Code's is: it refreshes a session that is
+    ///   already known, and one that has only announced itself never becomes a
+    ///   row at all — the engine drops a lone `session_start` for every agent
+    ///   (the pre-warmed-session rule), not just this one.
+    public static let ohMyPi = AgentProfile(
+        agentID: "omp",
+        displayName: "Oh My Pi",
+        rules: [
+            // --- Blocked on the user: the only sticky attention state. ---
+
+            // The `ask` tool is a question, so it is matched before the
+            // general tool rule below.
+            NormalizationRule(
+                matches: ["tool_execution_start"],
+                kind: .waitingInput,
+                summaryField: "toolName",
+                toolNameField: "toolName",
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd",
+                whenToolName: "ask"
+            ),
+            NormalizationRule(
+                matches: ["tool_approval_requested"],
+                kind: .waitingApproval,
+                summaryField: "toolName",
+                toolNameField: "toolName",
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+
+            // --- Working. ---
+
+            NormalizationRule(
+                matches: ["agent_start"],
+                kind: .working,
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+            NormalizationRule(
+                matches: ["tool_execution_start"],
+                kind: .working,
+                summaryField: "toolName",
+                toolNameField: "toolName",
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+            // The answer to an `ask` arrives as the end of that tool call, so
+            // this is what takes the pet off "Needs input" while the agent
+            // carries on with what it was told.
+            NormalizationRule(
+                matches: ["tool_execution_end", "tool_approval_resolved"],
+                kind: .working,
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+
+            // --- Finished. ---
+
+            NormalizationRule(
+                matches: ["agent_end"],
+                kind: .completed,
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+
+            // --- Lifecycle. ---
+
+            NormalizationRule(
+                matches: ["session_start"],
+                kind: .sessionStarted,
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+            NormalizationRule(
+                matches: ["session_shutdown"],
+                kind: .sessionClosed,
+                sessionIDField: "sessionId",
+                workingDirectoryField: "cwd"
+            ),
+        ]
+    )
+
     /// Fallback for anything reached by process observation alone.
     public static let genericCLI = AgentProfile(
         agentID: "generic-cli",
@@ -566,7 +671,7 @@ public enum AgentProfiles {
         confidence: .low
     )
 
-    public static let all: [AgentProfile] = [claudeCode, grok, codex, pi, antigravity, genericCLI]
+    public static let all: [AgentProfile] = [claudeCode, grok, codex, pi, antigravity, ohMyPi, genericCLI]
 
     public static func profile(for agentID: String) -> AgentProfile? {
         all.first { $0.agentID == agentID }

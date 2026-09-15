@@ -9,7 +9,7 @@ struct AgentsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Each agent reports its own status. Configuring writes hook lines to that agent's config file and keeps a backup; removing deletes only the lines the runtime wrote.")
+                Text("Each agent reports its own status. Configuring installs the integration that agent takes — hook lines in its config file, or one extension file — and keeps a backup; removing deletes only the integration the runtime installed, after taking a copy.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -110,7 +110,12 @@ struct AgentsView: View {
     private func configSummary(_ status: AgentStatus) -> String {
         guard status.record.isConfigured else { return "not configured" }
         let count = status.record.entries.count
-        return "\(count) hook\(count == 1 ? "" : "s") installed"
+        switch status.profile.mechanism {
+        case .hookTable:
+            return "\(count) hook\(count == 1 ? "" : "s") installed"
+        case .extensionFile:
+            return "extension installed"
+        }
     }
 
     private func lastEventSummary(_ status: AgentStatus) -> String {
@@ -124,15 +129,26 @@ struct AgentsView: View {
     private func problem(_ status: AgentStatus) -> String? {
         switch status.health {
         case .disconnected:
-            return "The hooks the runtime wrote are no longer in the config file."
+            switch status.profile.mechanism {
+            case .hookTable:
+                return "The hooks the runtime wrote are no longer in the config file."
+            case .extensionFile:
+                return "The extension the runtime wrote is missing, or no longer matches what it recorded."
+            }
         case .failed(let message):
             return message
         case .degraded where status.record.isConfigured:
             // Not "no events recently" — an idle agent is silent, and saying
             // otherwise made a working setup look broken. This fires only
             // when nothing has ever arrived since the hooks were installed.
-            return "Hooks are installed, but no event has ever reached the pet. "
-                + "Agents read their hooks at startup, so restart it once."
+            switch status.profile.mechanism {
+            case .hookTable:
+                return "Hooks are installed, but no event has ever reached the pet. "
+                    + "Agents read their hooks at startup, so restart it once."
+            case .extensionFile:
+                return "\(status.displayName) reads its extensions when a session starts, "
+                    + "so the pet appears the next time you start one."
+            }
         default:
             return nil
         }

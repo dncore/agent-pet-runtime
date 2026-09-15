@@ -22,7 +22,7 @@ struct ActivityView: View {
         VStack(spacing: 8) {
             Text("No agent sessions")
                 .foregroundStyle(.secondary)
-            Text("Run an agent with its hooks configured, or send a test event from the Agents tab.")
+            Text("Run a configured agent, or send a test event from the Agents tab.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

@@ -12,6 +12,11 @@ public struct AgentIntegrationProfile: Sendable {
     /// The UI shows it as detectable but not configurable.
     public let configurator: (any AgentConfigurator)?
     public let capabilities: Set<IntegrationCapability>
+    /// What the runtime's integration *is* for this agent, so the wording on
+    /// every surface can match it. A user told to check "the hooks in the
+    /// config file" when their integration is a single file in a directory
+    /// would go looking for something that does not exist.
+    public let mechanism: IntegrationMechanism
     /// Why there is no configurator, in the words that fit this agent.
     ///
     /// No agent lacks a configurator today (2026-09-15), but the field stays:
@@ -32,6 +37,7 @@ public struct AgentIntegrationProfile: Sendable {
         detection: AgentDetector.Specification,
         configurator: (any AgentConfigurator)?,
         capabilities: Set<IntegrationCapability>,
+        mechanism: IntegrationMechanism = .hookTable,
         configurationNote: String? = nil,
         postConfigureHint: String? = nil
     ) {
@@ -40,9 +46,23 @@ public struct AgentIntegrationProfile: Sendable {
         self.detection = detection
         self.configurator = configurator
         self.capabilities = capabilities
+        self.mechanism = mechanism
         self.configurationNote = configurationNote
         self.postConfigureHint = postConfigureHint
     }
+}
+
+/// How the runtime installs itself into an agent.
+public enum IntegrationMechanism: String, Codable, Sendable, Equatable {
+    /// Lines inside a configuration file the agent owns and writes itself —
+    /// Claude Code's `hooks` table, and Grok's. Installing means editing
+    /// somebody else's file, so it is transactional; removing means deleting
+    /// exactly the lines that were recorded.
+    case hookTable
+    /// One file the runtime owns outright, in a directory the agent scans —
+    /// Oh My Pi's extensions. Installing is a write, removing is a delete, and
+    /// the file is only touched while it still identifies itself as ours.
+    case extensionFile
 }
 
 public enum IntegrationCapability: String, Codable, Sendable, CaseIterable {
@@ -158,7 +178,10 @@ public enum AgentIntegrationRegistry {
                 configFiles: [home().appendingPathComponent(".pi/agent/settings.json")]
             ),
             configurator: PiConfigurator(transaction: transaction),
-            capabilities: [.detect, .configure, .uninstall, .liveEvents, .testEvent]
+            capabilities: [.detect, .configure, .uninstall, .liveEvents, .testEvent],
+            // The same shape as Oh My Pi's: one file the runtime owns in a
+            // directory the agent scans, not lines inside a file it owns.
+            mechanism: .extensionFile
         )
     }
 
@@ -183,6 +206,40 @@ public enum AgentIntegrationRegistry {
         )
     }
 
+    /// Oh My Pi is the one agent here that is extended by a *file*: it loads
+    /// every `*.ts` in `~/.omp/agent/extensions/` at session start, so the
+    /// integration is one file the runtime owns outright rather than lines
+    /// inside a file somebody else owns. Installing it is a write, removing it
+    /// is a delete, and nothing in omp's own configuration is touched.
+    ///
+    /// It is also why the note below is absent: this agent *is* configurable.
+    /// Its session events arrive from the extension (`--agent omp`), not from
+    /// a hook table, so there is no config file for the JSON transaction to
+    /// edit and none is needed.
+    public static func ohMyPi(transaction: ConfigTransaction) -> AgentIntegrationProfile {
+        let agentDirectory = home().appendingPathComponent(".omp/agent")
+        return AgentIntegrationProfile(
+            agentID: "omp",
+            displayName: "Oh My Pi",
+            detection: .init(
+                agentID: "omp",
+                displayName: "Oh My Pi",
+                executableNames: ["omp"],
+                configFiles: [
+                    agentDirectory.appendingPathComponent("config.yml"),
+                    agentDirectory.appendingPathComponent("extensions"),
+                ]
+            ),
+            configurator: ExtensionFileConfigurator(
+                agentID: "omp",
+                directory: agentDirectory.appendingPathComponent("extensions"),
+                transaction: transaction
+            ),
+            capabilities: [.detect, .configure, .uninstall, .liveEvents, .testEvent],
+            mechanism: .extensionFile
+        )
+    }
+
     public static func all(transaction: ConfigTransaction) -> [AgentIntegrationProfile] {
         [
             claudeCode(transaction: transaction),
@@ -190,6 +247,7 @@ public enum AgentIntegrationRegistry {
             codex(transaction: transaction),
             pi(transaction: transaction),
             antigravity(transaction: transaction),
+            ohMyPi(transaction: transaction),
         ]
     }
 

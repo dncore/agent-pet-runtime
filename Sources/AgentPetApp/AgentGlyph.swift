@@ -20,6 +20,7 @@ enum AgentGlyph {
         case "grok":        return "bolt"
         case "pi":          return "function"
         case "antigravity": return "sparkles"
+        case "omp":         return "sum"
         default:            return "pawprint"
         }
     }
