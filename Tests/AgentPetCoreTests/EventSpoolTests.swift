@@ -95,16 +95,17 @@ struct EventSpoolTests {
     @Test("a payload written in an extension's own spelling keeps its identity")
     func extensionSpellingKeepsItsIdentity() throws {
         // The regression this exists for: the allowlist knew only Claude Code's
-        // `session_id` / `tool_name`, so an event spooled from an in-process
-        // extension — those send the camelCase names their own API uses — lost
-        // its session, and replaying it after a restart drew that session under
-        // a process-derived name, beside the real one.
+        // `session_id` / `tool_name`, so a payload that spelled its session id
+        // only in camelCase was spooled without one, and replaying it after a
+        // restart drew that session under a process-derived name, beside the
+        // real one. The envelope below is shaped like such a payload; the
+        // redaction path itself does not care which agent it came from.
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
         EventSpool.write(
             BridgeEnvelope(
-                agentID: "pi",
+                agentID: "generic-cli",
                 eventName: "tool_execution_start",
                 receivedAt: origin,
                 proc: BridgeProcessInfo(pid: 100, ppid: 50, tty: nil),
