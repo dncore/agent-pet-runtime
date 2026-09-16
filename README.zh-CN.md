@@ -218,7 +218,7 @@ App 没运行时（重启，或 `brew upgrade` 替换 bundle 的那几秒），h
 ## 开发
 
 ```bash
-swift build && swift test        # 543 个测试
+swift build && swift test        # 547 个测试
 swift run AgentPet               # 跑起来
 
 swift run AgentPet --diagnose                      # 发现了哪些宠物，以及为什么

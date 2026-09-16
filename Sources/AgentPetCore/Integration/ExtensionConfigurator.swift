@@ -34,9 +34,7 @@ public enum AgentPetExtension {
     /// and what lets an install made by a since-moved runtime still be
     /// recognised (and replaced) later.
     public static func markerLine(agentID: String, shimPath: String) -> String {
-        // Through the same transformation the generated comment uses, or this
-        // record would stop matching the file it was written for.
-        "// shim: \(ExtensionTemplate.commentSafe(shimPath)) --agent \(agentID)"
+        ExtensionTemplate.markerLine(agentID: agentID, shimPath: shimPath)
     }
 
     /// Whether a file's text is one of ours.

@@ -6,8 +6,8 @@ import Foundation
 /// Pi extensions run with the user's full permissions, so the file is written
 /// plainly — readable, marked at the top, and self-contained (node built-ins
 /// only, no package install, no settings edit). Uninstall deletes exactly that
-/// file, and only while it still carries the marker; anything the user wrote
-/// is refused rather than overwritten.
+/// file, and only while it still carries every line the record says was
+/// written into it; anything the user wrote is refused rather than overwritten.
 public struct PiConfigurator: AgentConfigurator {
 
     public let agentID = "pi"
@@ -19,7 +19,6 @@ public struct PiConfigurator: AgentConfigurator {
     public let extensionURL: URL
 
     private let transaction: ConfigTransaction
-    private let backupDirectory: URL
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -27,17 +26,11 @@ public struct PiConfigurator: AgentConfigurator {
     ) {
         self.extensionURL = home.appendingPathComponent(".pi/agent/extensions/agentpet.ts")
         self.transaction = transaction
-        self.backupDirectory = transaction.backupDirectory
     }
 
     public func configurationTargets() -> [URL] { [extensionURL] }
 
     // MARK: - Template
-
-    /// The path as it appears inside the template's JavaScript string literal.
-    static func jsStringLiteral(_ path: String) -> String {
-        ExtensionTemplate.jsStringLiteral(path)
-    }
 
     /// The generated file is shared with Oh My Pi's integration — one template,
     /// with the event set and the ownership marker as its parameters
@@ -54,13 +47,18 @@ public struct PiConfigurator: AgentConfigurator {
 
     // MARK: - Reading
 
+    /// True while the file carries every line the record says was written into
+    /// it — the same rule the Oh My Pi configurator uses, deliberately.
+    ///
+    /// A v0.9.6 record reads correctly under it: its entry is the marker line,
+    /// which the file it wrote still contains. A record written from here on
+    /// carries the `// shim:` line instead, which the new files contain.
     public func entriesPresent(in record: IntegrationRecord) -> Bool {
-        guard let shimPath = record.shimPath,
+        guard !record.entries.isEmpty,
               let data = try? Data(contentsOf: extensionURL),
               let text = String(data: data, encoding: .utf8)
         else { return false }
-        return text.contains(Self.marker)
-            && text.contains(Self.jsStringLiteral(shimPath))
+        return record.entries.allSatisfy { text.contains($0.command) }
     }
 
     // MARK: - Configure
@@ -84,10 +82,11 @@ public struct PiConfigurator: AgentConfigurator {
         }
 
         let template = Self.template(shimPath: shimPath)
+        let recorded = ExtensionTemplate.markerLine(agentID: agentID, shimPath: shimPath)
         let outcome = try transaction.performText(
             on: extensionURL,
             transform: { text in text = template },
-            verify: { $0.contains(Self.marker) && $0.contains(Self.jsStringLiteral(shimPath)) }
+            verify: { $0.contains(Self.marker) && $0.contains(recorded) }
         )
 
         let record = IntegrationRecord(
@@ -96,7 +95,7 @@ public struct PiConfigurator: AgentConfigurator {
             configuredAt: previous?.configuredAt ?? now,
             lastValidatedAt: now,
             shimPath: shimPath,
-            entries: [WrittenEntry(file: extensionURL.path, event: "extension", command: Self.marker)]
+            entries: [WrittenEntry(file: extensionURL.path, event: "extension", command: recorded)]
         )
 
         return ConfigurationOutcome(
@@ -112,25 +111,25 @@ public struct PiConfigurator: AgentConfigurator {
         _ record: IntegrationRecord,
         now: Date
     ) throws -> ConfigurationOutcome {
-        var changed = false
-        var backups: [String] = []
-
-        if let data = try? Data(contentsOf: extensionURL),
-           let text = String(data: data, encoding: .utf8),
-           text.contains(Self.marker) {
-            // Backed up before the delete, the same as every other edit here.
-            try FileManager.default.createDirectory(
-                at: backupDirectory, withIntermediateDirectories: true
+        guard entriesPresent(in: record),
+              let snapshot = try? transaction.snapshot(extensionURL)
+        else {
+            let updated = IntegrationRecord(
+                agentID: agentID,
+                status: .notConfigured,
+                configuredAt: record.configuredAt,
+                lastValidatedAt: now,
+                shimPath: record.shimPath,
+                entries: []
             )
-            let backup = backupDirectory.appendingPathComponent(
-                "\(extensionURL.lastPathComponent)."
-                    + "\(Int(Date().timeIntervalSince1970)).\(Hashing.sha256(data).prefix(8))"
-            )
-            try data.write(to: backup, options: .atomic)
-            backups.append(backup.path)
-            try FileManager.default.removeItem(at: extensionURL)
-            changed = true
+            return ConfigurationOutcome(record: updated, changedFiles: [], backupURLs: [])
         }
+
+        // Through the transaction, so the same retention policy bounds this
+        // backup — the file the record says is ours is the only thing removed.
+        var backups: [String] = []
+        if let backup = try transaction.backUp(snapshot) { backups.append(backup.path) }
+        try FileManager.default.removeItem(at: extensionURL)
 
         let updated = IntegrationRecord(
             agentID: agentID,
@@ -142,7 +141,7 @@ public struct PiConfigurator: AgentConfigurator {
         )
         return ConfigurationOutcome(
             record: updated,
-            changedFiles: changed ? [extensionURL.path] : [],
+            changedFiles: [extensionURL.path],
             backupURLs: backups
         )
     }

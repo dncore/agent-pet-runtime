@@ -24,6 +24,16 @@ public enum ExtensionTemplate {
         case ohMyPi
     }
 
+    /// The line naming the shim and the agent a generated file reports to.
+    ///
+    /// Written into the file and recorded verbatim in the `IntegrationRecord`,
+    /// so presence and removal are one question: is every recorded line still
+    /// there? Comment-safe, because this line is a comment and a path can
+    /// contain a line separator.
+    public static func markerLine(agentID: String, shimPath: String) -> String {
+        "// shim: \(commentSafe(shimPath)) --agent \(commentSafe(agentID))"
+    }
+
     /// The path as it may appear inside a `//` comment line.
     ///
     /// A path can contain a line separator (legal on APFS), and one inside a
@@ -83,7 +93,7 @@ public enum ExtensionTemplate {
 
         return """
         \(marker)
-        // shim: \(commentSafe(shimPath)) --agent \(agentID)
+        \(markerLine(agentID: agentID, shimPath: shimPath))
         //
         // Remove with:  AgentPet --unconfigure \(agentID)
         //               (or the manager window's Remove Integration)

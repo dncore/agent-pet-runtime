@@ -102,6 +102,13 @@ struct PiConfigurationTests {
         #expect(text.contains("--agent pi"))
         #expect(text.contains("const AGENT = \"pi\";"))
         #expect(sandbox.configurator().entriesPresent(in: outcome.record))
+        // The record carries the line the file was written with. Without this,
+        // recording the bare marker again would keep every case here green
+        // while presence silently stopped looking at the file's own line.
+        #expect(
+            outcome.record.entries.first?.command
+                == ExtensionTemplate.markerLine(agentID: "pi", shimPath: piShim)
+        )
 
         // The only thing under home is Pi's own directory: no settings edit,
         // no backup (nothing existed to back up), no package.
@@ -121,11 +128,88 @@ struct PiConfigurationTests {
     @Test("a moved shim shows up as drift")
     func movedShimIsDrift() throws {
         let sandbox = try PiSandbox()
-        let outcome = try sandbox.configurator().configure(shimPath: piShim, replacing: nil, now: piNow)
+        let configurator = sandbox.configurator()
+        let outcome = try configurator.configure(shimPath: piShim, replacing: nil, now: piNow)
 
+        // The recorded entry is the line that carries the path, so a record
+        // written at the new location does not match the file the old one
+        // installed — which is what drift means now.
         var moved = outcome.record
         moved.shimPath = "/somewhere/else/agentpet-hook"
-        #expect(!sandbox.configurator().entriesPresent(in: moved))
+        moved.entries = [WrittenEntry(
+            file: sandbox.extensionURL.path,
+            event: "extension",
+            command: ExtensionTemplate.markerLine(
+                agentID: "pi", shimPath: "/somewhere/else/agentpet-hook"
+            )
+        )]
+        #expect(!configurator.entriesPresent(in: moved))
+        #expect(configurator.entriesPresent(in: outcome.record), "the file it wrote still matches")
+    }
+
+    @Test("a record written before the shared rule still reads present, and still removes")
+    func olderRecordStillWorks() throws {
+        // v0.9.6 recorded the marker line as the entry. The file it wrote still
+        // contains it, so presence and removal need no branch for that
+        // generation — one rule covers both.
+        let sandbox = try PiSandbox()
+        let configurator = sandbox.configurator()
+        _ = try configurator.configure(shimPath: piShim, replacing: nil, now: piNow)
+
+        let old = IntegrationRecord(
+            agentID: "pi",
+            status: .configured,
+            shimPath: piShim,
+            entries: [WrittenEntry(
+                file: sandbox.extensionURL.path,
+                event: "extension",
+                // Spelled out rather than read from `PiConfigurator.marker`: the
+                // point is that the value v0.9.6 recorded still works, and a
+                // constant would move with the code and prove nothing.
+                command: "// agentpet-extension v1"
+            )]
+        )
+        #expect(configurator.entriesPresent(in: old))
+
+        let removed = try configurator.uninstall(old, now: piNow)
+        #expect(removed.didChange)
+        #expect(!FileManager.default.fileExists(atPath: sandbox.extensionURL.path))
+    }
+
+    @Test("the uninstall backup goes through the retention policy")
+    func uninstallBackupIsPruned() throws {
+        // The copy this replaced wrote into the same directory under the same
+        // name, so only pruning tells the two apart: one stale backup beyond
+        // the limit, and the policy has to bring the directory back down.
+        let sandbox = try PiSandbox()
+        let backups = sandbox.home.appendingPathComponent("backups")
+        let configurator = PiConfigurator(
+            home: sandbox.home,
+            transaction: ConfigTransaction(backupDirectory: backups, maxBackups: 1)
+        )
+        let installed = try configurator.configure(shimPath: piShim, replacing: nil, now: piNow)
+
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+        for stale in ["settings.json.1.aaaaaaaa", "settings.json.2.bbbbbbbb"] {
+            try Data("stale".utf8).write(to: backups.appendingPathComponent(stale))
+        }
+
+        _ = try configurator.uninstall(installed.record, now: piNow)
+
+        let kept = try FileManager.default.contentsOfDirectory(atPath: backups.path)
+        #expect(kept.count == 1, "the limit was not applied: \(kept.sorted())")
+        #expect(kept.allSatisfy { $0.hasPrefix("agentpet.ts.") }, "the newest backup went: \(kept)")
+    }
+
+    @Test("a record with nothing in it removes nothing")
+    func emptyRecordRemovesNothing() throws {
+        let sandbox = try PiSandbox()
+        let configurator = sandbox.configurator()
+        _ = try configurator.configure(shimPath: piShim, replacing: nil, now: piNow)
+
+        let outcome = try configurator.uninstall(IntegrationRecord(agentID: "pi"), now: piNow)
+        #expect(!outcome.didChange)
+        #expect(FileManager.default.fileExists(atPath: sandbox.extensionURL.path))
     }
 
     @Test("a file the user wrote is refused, never overwritten")

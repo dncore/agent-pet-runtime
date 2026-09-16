@@ -372,7 +372,7 @@ whole of the network surface — nothing else here talks to anything.
 ## Development
 
 ```bash
-swift build && swift test        # 543 tests
+swift build && swift test        # 547 tests
 swift run AgentPet               # run it
 
 swift run AgentPet --diagnose                      # what pets are discoverable, and why
