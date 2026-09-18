@@ -755,6 +755,22 @@ Codex 的设置页有 `Tuck Away Pet` / `Wake Pet`（`petVisible`，默认 true�
 
 **未能在本会话验证的一点**：SwiftUI 退回画的那个 in-content 开关是否随工具栏出现而消失——它由 SwiftUI 自己绘制，不进 AppKit 视图树，而本会话的窗口拿不到 window server 的可见状态（§6.5c），截图手段也不可用。若升级后看到两个开关，说明它没消失，那就把我们的按钮去掉、改用别的方式绑定。
 
+### 6.5e 管理器的 ⌘,：只加在主菜单，不挂状态栏菜单（2026-09-18）
+
+**决定**：`Settings…` 进主菜单（app menu，⌘,），动作是把管理器的 section 设成 Settings 再打开管理器（`AppDelegate.openSettings`）。不新增窗口、不新增设置页，只是把已有的 Settings 那一节接到一个键上。
+
+**为什么不是状态栏菜单**：那条路按仓内既有结论不挂键等价，结论写在代码里（`makeMenu` 的注释）：附件型 app 加上一个不接受焦点的宠物面板，从来不是活动 app，那里的快捷键按不响；广告一个按不动的快捷键比不广告更糟。该菜单里现存的唯一例外是 `Quit` 的 ⌘Q（`AppDelegate.swift:1045`）——它是否真能在菜单跟踪中触发未验证，也不构成本轮的依据（登记为遗留项）。主菜单只在 app 前台时显示，而对这只 app 而言那恰好等于"管理器窗口开着"，所以 ⌘, 真正的用武之地就是**人已经在管理器里、想一步跨到 Settings**，而不是"宠物在桌面上飘着时按 ⌘,"。（后者只有全局热键能做到，而那会把 ⌘, 从系统里所有 app 手里抢走，不做。）
+
+**用户报"按 ⌘, 要等约 1 秒才切到 Settings"（2026-09-18，复现、定位、修掉）**：分层计时发现三块主线程同步开销叠在一起，正好是那 1 秒：① `openManager()` 的 `refreshAll()` 里 `refreshAgents()` 给每个已注册 agent 起一个 `--version` 进程（实测 445–705ms）；② `MainWindowView.onAppear` 又调一次 `refreshAll()`，于是"开一次管理器"这笔开销付**两遍**；③ `show()` 对**已经在屏幕上的**窗口也无条件重建 `contentViewController`（整棵 SwiftUI 树，实测 200–357ms）——重建本来只为"窗口关过再打开"才有意义（§6.5c：离屏窗口 SwiftUI 不再更新）。修法三处，都是"只做这一步需要的事"：`show()` 只在窗口**不在屏上**时重建；删掉视图里的 `onAppear { model.refreshAll() }`（开窗代码已经先刷过，一次开窗只刷一次）；`openSettings()` 在管理器已经开着时不再走 `openManager()`，只把窗口提到前面。结果（自检直接打印动作耗时）：已经开着时 ⌘, 动作 **0–2ms**（修前 652ms）；关着时打开仍约 0.8–0.9s（探测 0.5–0.6s + 建窗 0.3s；进程里第一次开窗的冷启动实测到 2.0s）——那是"每 agent 一个 `--version` 进程"的探测与建窗的既有代价，这次没动（要动就该把探测挪出主线程，那是另一件事；本轮没做）。对应的自检断言：这一按**不得**重建视图树（比较 `window.contentViewController` 的同一性），且动作耗时必须 < 250ms——把重建改回去即失败（实测报出 357ms）。
+
+**"不在屏上"这个判据与诊断运行**：`--selftest` 等诊断运行从不把管理器上屏（上游同日加的 `presents = !HeadlessMode.isActive` 守卫，为的是不把用户从正在打字的地方拽走），于是"在屏上"在那里恒为假。`isOpen` 因此把 `HeadlessMode` 也算作开着：那里没有屏幕要维持，重建只会让自检去量一个用户永远遇不到的重建——实测不这样写，`checkSettingsShortcut` 的第二次按键会走开窗路径而报"重建了视图树"。同时自检找窗口改用**同一性**而不是"按标题找可见窗口"：`close()` 过的管理器窗口（`isReleasedWhenClosed = false`）仍在 `NSApp.windows` 里，而诊断运行里没有任何窗口是可见的，两件事叠加会让标题查找认错窗口。
+
+**自检证据**（`RenderSelfTest.checkSettingsShortcut`，每次 `--selftest` 都跑）：走真菜单 + 真按键事件——先 `NSApplication.sendEvent`（app 自己的键等价通路：事件交给主菜单，主菜单按 key equivalent 匹配再派发），只有它没送达时才退回 `NSMenu.performKeyEquivalent(with:)`，并把**实际送达的那条路打印出来**，不假定；本机全部按键都由 `sendEvent` 送达（管理器窗口一开，app 就是活动 app）。断言的是：主菜单里有那个 ⌘, 项且修饰键恰好是 `.command`（多一个 ⌥ 就是另一个快捷键，菜单匹配不到等于没做）；管理器关着时 ⌘, 打开它并落在 Settings；**已经开在 Activity 的同一个窗口**被移到 Settings；窗口副标题（`navigationSubtitle` → `window.subtitle`）跟着变——模型变了不等于窗口变了，而标题栏与侧边栏读的是同一个 section，重绘了标题栏就是重绘了侧边栏；以及**焦点在 Settings 的数字输入框里时快捷键照样触发**（字段编辑器成为 first responder 后，用窗口自己的另一个菜单快捷键 ⌃⌘S 验证——此处 section 已在 Settings，⌘, 没有可观测的变化，而侧边栏开关可观测）。
+
+**反证**（实测，用来证明这些自检不是空转）：把菜单项的 action 从 `openSettings` 换成 `openManager` → 两条断言都失败（管理器开在 Activity）；把菜单项整行删掉 → 直接报"主菜单里没有任何 ⌘, 项"；把上面那条焦点断言按下的键换成**字段编辑器自己占用的** ⌘A（Select All）→ 字段确实吃掉了它、断言失败（`field editor focused: true`），说明这条断言能分辨"字段吃掉"与"字段没吃掉"。
+
+**未验证**：管理器最小化到 Dock 之后按 ⌘, 会不会被叫回来。本环境拒绝最小化窗口（实测 `miniaturize(nil)` 之后 `isMiniaturized` 仍为 `false`），自检因此打印一行 `– not checked` 而不假定结果。一手文档也答不了：Apple 对 `makeKeyAndOrderFront` 只说"移到最前并成为 key window"，对 `deminiaturize` 只说"还原 Dock 里的窗口"，没有一边说前者会顺手做后者——所以这里没有加那行"保险"代码。
+
 ### 6.6 状态栏 tap：上下文用量的唯一来源（2026-09-14）
 
 hook payload **不含**任何 token 计数——在 2.1.268 的二进制里逐字段确认过：`used_percentage` / `context_window` 只出现在**状态栏** JSON 的 schema 中（`context_window.used_percentage`、`context_window_size`、`total_input_tokens`、`session_name`、`workspace.repo.name`）。这个数字只有 Claude Code 自己算得对：上下文窗口大小取决于模型，而网关背后的模型名外部无从得知（本机实测同一条会话已占用 302k token）。

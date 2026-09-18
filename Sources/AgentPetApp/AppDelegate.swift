@@ -398,6 +398,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         managerWindow?.show()
     }
 
+    /// ⌘, — the manager, on its Settings section.
+    ///
+    /// In the main menu, and only there. The status menu deliberately carries
+    /// no shortcut: an accessory app with a nonactivating pet panel is never
+    /// the active one, so a key equivalent in that menu would do nothing while
+    /// advertising itself. The main menu is displayed exactly when the app is
+    /// frontmost, which for this app is exactly when the manager window is
+    /// open — so the one thing left for ⌘, here is to work while the user is
+    /// already in the manager, wherever in it they are.
+    ///
+    /// Which is also why an open manager is only re-fronted rather than
+    /// re-opened: `openManager`'s refresh is a measured 445ms of spawning one
+    /// `--version` process per agent, and a section switch needs none of it.
+    /// That wait, plus the view tree the window used to rebuild on the way in,
+    /// was the whole of the second the shortcut took to show Settings.
+    @objc private func openSettings() {
+        model?.section = .settings
+        guard managerWindow?.isOpen != true else {
+            managerWindow?.show()
+            return
+        }
+        openManager()
+    }
+
     // MARK: - Window
 
     private func buildWindow() {
@@ -755,6 +779,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About \(name)", action: #selector(showAbout), keyEquivalent: "")
         appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        // ⌘, — the shortcut every Mac app gives its settings. It enters the
+        // same manager window the status menu's "Open Pet Manager…" does; the
+        // difference is the section it lands on.
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(name)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = NSMenuItem(
