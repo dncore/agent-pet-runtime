@@ -273,6 +273,7 @@ Sources/agentpet-hook/    Agent 执行的 shim。必须永远 exit 0。
 | 指针落到宠物身上播放跳跃 | 完成——Codex 的 hover，末帧停住 |
 | 宠物第一次出现时自我问候并挥手 | 完成——8 秒，每只宠物一次 |
 | 收纳 / 唤醒宠物 | 完成——菜单栏项，跨重启记住 |
+| ⌘, 直接进设置 | 完成——主菜单的 Settings… 项，管理器停在哪一节都切得过去 |
 | 事件桥接，已对着真实二进制验证 | 完成 |
 | Pet Manager：列出 Codex 的宠物、预览、选用 | 完成——只读；宠物由 Codex 自己的工具链安装 |
 | Agent 集成：检测、配置、移除 | Claude Code、Grok、Pi、Codex、Antigravity 与 Oh My Pi |

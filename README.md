@@ -463,6 +463,7 @@ corrected specification.
 | The pointer landing on the pet plays the jump | done — Codex's hover, held on the last frame |
 | The pet introduces itself once, waving | done — eight seconds, once per pet |
 | Tuck the pet away and wake it again | done — the menu bar item, remembered across launches |
+| Settings on ⌘, | done — the app menu's Settings… item, from wherever the manager is |
 | Event bridge, verified against the real binary | done |
 | Pet Manager: list Codex's pets, preview, pick one | done — read-only; pets are installed with Codex's own tooling |
 | Agent Integrations: detect, configure, remove | Claude Code, Grok, Pi, Codex, Antigravity, and Oh My Pi |

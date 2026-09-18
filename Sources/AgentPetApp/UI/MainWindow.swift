@@ -73,7 +73,11 @@ struct MainWindowView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 520)
-        .onAppear { model.refreshAll() }
+        // No refresh here. The view used to re-read pets and re-detect agents
+        // on appearing, and the code that opens the window does exactly that
+        // first — so every open paid for agent detection twice, a measured
+        // 445ms each time (one `--version` process per agent). One refresh per
+        // open, in the one place that opens the window.
     }
 
     @ViewBuilder
@@ -182,6 +186,26 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.model = model
     }
 
+    /// Whether the manager is open — the window exists, and is either on
+    /// screen or deliberately never put there.
+    ///
+    /// The difference between the two things `show()` can be asked to do:
+    /// bring back a window that was closed (which needs a new view tree), and
+    /// bring a window that is already up to the front (which must not rebuild
+    /// it — see below).
+    ///
+    /// `HeadlessMode` is why this is not simply `isVisible`: a diagnostic run
+    /// builds the manager without putting it in front, and a window that was
+    /// never presented is not "closed" in the sense the rebuild is for —
+    /// there is nothing on screen to keep alive, and `--selftest` opens the
+    /// manager precisely to inspect it. Reading it as closed would rebuild the
+    /// tree between the two presses the shortcut's own check makes, and have
+    /// that check measure a rebuild no user can cause.
+    var isOpen: Bool {
+        guard let window else { return false }
+        return window.isVisible || HeadlessMode.isActive
+    }
+
     /// The app is an accessory — menu bar only, no Dock icon — which is right
     /// for a pet and wrong for a window: an accessory app shows no application
     /// menu at all, so the manager had no About, no Quit and no working copy
@@ -203,14 +227,20 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         startTicking()
 
         if let window {
-            // A fresh view tree, every time it is opened again.
+            // A fresh view tree, but only for a window that has been off
+            // screen.
             //
-            // SwiftUI stops delivering updates to a window that has been off
-            // screen, and reopening it does not bring them back — measured in
+            // SwiftUI stops delivering updates to a window that has been
+            // closed, and reopening it does not bring them back — measured in
             // both directions with a probe, and the reason the preview timers
             // had to learn to stop themselves. Rebuilding costs one decode of
             // the pet thumbnails and buys a window that is alive again; the
             // chosen section lives in the model so it survives the rebuild.
+            //
+            // A window that is *still* on screen needs none of that: updates
+            // reach it live — the section the caller just set lands in it —
+            // and rebuilding is what made ⌘, sit there for a measured 200ms
+            // before anything moved.
             //
             // The swap also makes AppKit resize the window to the new view's
             // fitting size — SwiftUI's minimum, 760x520 — and `windowDidResize`
@@ -218,11 +248,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             // at the minimum, and the next launch opened at the minimum too
             // (user report, 2026-09-18). The window keeps the frame it had,
             // and the flag keeps the intermediate size out of the defaults.
-            let frame = window.frame
-            isRebuilding = true
-            defer { isRebuilding = false }
-            window.contentViewController = Self.makeContent(model: model)
-            window.setFrame(frame, display: false)
+            if !isOpen {
+                let frame = window.frame
+                isRebuilding = true
+                defer { isRebuilding = false }
+                window.contentViewController = Self.makeContent(model: model)
+                window.setFrame(frame, display: false)
+            }
             if presents {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)

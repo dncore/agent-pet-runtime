@@ -162,6 +162,7 @@ enum RenderSelfTest {
         failures += checkMessagePanel(controller: controller, view: view, petWidth: petWidth)
         failures += checkReopenedWindow()
         failures += checkManagerSidebar()
+        failures += checkSettingsShortcut()
 
         print("")
         print(failures == 0 ? "PASS" : "FAIL (\(failures) problem(s))")
@@ -1498,6 +1499,249 @@ enum RenderSelfTest {
         model.showsSidebar = true
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         window.close()
+        return failures
+    }
+
+    /// ⌘, lands the manager on its Settings section.
+    ///
+    /// Driven through the menu, on purpose. The menu item *is* the feature, so
+    /// a check that called the action itself would pass with the item missing,
+    /// or installed on a shortcut the menu cannot match. It also drives the
+    /// app's own manager rather than one built here: a manager the check built
+    /// for itself would be a window the shortcut never touches — measured, by
+    /// watching exactly that and seeing nothing happen.
+    private static func checkSettingsShortcut() -> Int {
+        print("")
+        print("Settings shortcut")
+        var failures = 0
+
+        /// Every manager window in the process, whoever opened it.
+        ///
+        /// The check has to follow the window *the press* created, and it
+        /// cannot do that by looking for one: the sidebar check before it opens
+        /// a manager of its own and closes it, and a closed window with
+        /// `isReleasedWhenClosed = false` stays in `NSApp.windows`; a
+        /// diagnostic run puts none of them on screen, so `isVisible` cannot
+        /// tell them apart either. Identity can.
+        func managerWindows() -> [NSWindow] {
+            NSApp.windows.filter { $0.title == "Agent Pet Runtime" }
+        }
+
+        let preexisting = Set(managerWindows().map(ObjectIdentifier.init))
+
+        let item = NSApp.mainMenu?.items
+            .compactMap { $0.submenu?.items.first { $0.keyEquivalent == "," } }
+            .first
+        guard let item else {
+            print("  ✗ no ⌘, item anywhere in the main menu")
+            return failures + 1
+        }
+        if item.keyEquivalentModifierMask == .command {
+            print("  ✓ the main menu offers “\(item.title)” on ⌘,")
+        } else {
+            print("  ✗ “\(item.title)” needs more than ⌘: \(item.keyEquivalentModifierMask)")
+            failures += 1
+        }
+
+        /// A key event for a window, in the shape AppKit's menu matcher reads:
+        /// the modifier flags plus the characters *ignoring* modifiers are what
+        /// a key equivalent is matched against, and a synthesized event has to
+        /// carry them — an empty string matches nothing.
+        func keyEvent(
+            characters: String,
+            keyCode: UInt16,
+            modifiers: NSEvent.ModifierFlags,
+            windowNumber: Int
+        ) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: modifiers,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: windowNumber,
+                context: nil,
+                characters: characters,
+                charactersIgnoringModifiers: characters,
+                isARepeat: false,
+                keyCode: keyCode
+            )
+        }
+
+        /// What one press of ⌘, turned into: which route delivered it, and how
+        /// long the action itself held the main thread.
+        ///
+        /// The duration is the thing the user feels: everything the action
+        /// does runs before the window repaints, so a press that spends
+        /// hundreds of milliseconds re-detecting agents and rebuilding the
+        /// view tree *is* the second of delay, however fast the section
+        /// change is in the model.
+        struct Delivery {
+            let route: String
+            let milliseconds: Double
+
+            var described: String { "delivered by \(route), action \(Int(milliseconds))ms" }
+        }
+
+        /// Presses ⌘, and reports what it cost. `window` is nil only for the
+        /// first press, when the manager the press is about to open does not
+        /// exist yet.
+        ///
+        /// `NSApplication.sendEvent` is the app's own path to a menu shortcut:
+        /// the key event goes to the main menu, which matches it against the
+        /// items' key equivalents and dispatches the one that fits. That route
+        /// needs the app to be active — true once a manager window has opened,
+        /// since opening one activates the app, but not guaranteed in every
+        /// environment — so when it delivers nothing the menu is asked
+        /// directly: the same match, one step in from where AppKit calls it,
+        /// and the only route that works with an inactive app. Which of the
+        /// two ran is printed rather than assumed.
+        func press(in window: NSWindow?, until changed: () -> Bool) -> Delivery {
+            // 43 is the comma key on this keyboard.
+            guard let event = keyEvent(characters: ",", keyCode: 43, modifiers: .command,
+                                       windowNumber: window?.windowNumber ?? 0) else {
+                return Delivery(route: "no event", milliseconds: 0)
+            }
+
+            var started = ProcessInfo.processInfo.systemUptime
+            NSApp.sendEvent(event)
+            var spent = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            if changed() { return Delivery(route: "NSApplication.sendEvent", milliseconds: spent) }
+
+            started = ProcessInfo.processInfo.systemUptime
+            let handled = NSApp.mainMenu?.performKeyEquivalent(with: event) == true
+            spent = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            return Delivery(route: handled && changed() ? "the main menu" : "nothing", milliseconds: spent)
+        }
+
+        // Closed: the shortcut has to open one, on Settings.
+        let openedBy = press(in: nil) { managerWindows().count > preexisting.count }
+        guard let opened = managerWindows().first(where: { !preexisting.contains(ObjectIdentifier($0)) }) else {
+            print("  ✗ ⌘, did not open a manager window (\(openedBy.described))")
+            return failures + 1
+        }
+
+        /// The model behind the window the press opened — what a user sees
+        /// change is its view tree, and the section lives in the model because
+        /// this window rebuilds that tree when it is reopened.
+        func managerModel() -> AgentPetModel? {
+            (opened.contentViewController as? NSHostingController<MainWindowView>)?.rootView.model
+        }
+
+        if managerModel()?.section == .settings {
+            print("  ✓ from a closed manager, ⌘, opens it on Settings"
+                  + (opened.subtitle == "Settings" ? " — title bar included" : "")
+                  + " (\(openedBy.described))")
+        } else {
+            print("  ✗ the manager opened on \(managerModel()?.section.rawValue ?? "no model")")
+            failures += 1
+        }
+
+        // Open, and elsewhere in it: the shortcut has to move that window —
+        // and only that. This is the case the shortcut exists for, since the
+        // menu bar is only there while the manager window is; it is also the
+        // one that used to take about a second, waiting on work a section
+        // switch does not need.
+        //
+        // The title bar is what turns "the model changed" into "the window
+        // changed": it and the sidebar read the same section, so a tree that
+        // repainted one repainted the other. Where the environment cannot
+        // repaint a window at all — a diagnostic run puts none on screen —
+        // that half is reported as unchecked rather than assumed.
+        managerModel()?.section = .activity
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        let repaints = opened.subtitle == "Activity"
+        if !repaints {
+            print("  – this window is not repainting here; the move is checked on the model alone")
+        }
+
+        // The view tree the window already had, so "it switched the section"
+        // can be told from "it built the window again": a new controller means
+        // the whole tree was thrown away and rebuilt, which is worth a
+        // measured 200ms and is only ever needed for a window that had been
+        // closed.
+        let treeBefore = opened.contentViewController
+        let movedBy = press(in: opened) { managerModel()?.section == .settings }
+        let treeAfter = opened.contentViewController
+
+        if managerModel()?.section != .settings {
+            print("  ✗ ⌘, left the manager on \(managerModel()?.section.rawValue ?? "no model")"
+                  + " (title bar: \(opened.subtitle), \(movedBy.described))")
+            failures += 1
+        } else if treeAfter !== treeBefore {
+            print("  ✗ switching a section rebuilt the window's view tree (\(movedBy.described))")
+            failures += 1
+        } else if !(opened.subtitle == "Settings" || !repaints) {
+            print("  ✗ the model moved but the window did not: title bar says \(opened.subtitle)")
+            failures += 1
+        } else if movedBy.milliseconds > 250 {
+            // Detection is a measured 445ms of `--version` process spawning
+            // and the rebuild about 200ms; a section switch needs neither, so
+            // anything in this range means one of them crept back in.
+            print("  ✗ the switch held the main thread for \(Int(movedBy.milliseconds))ms — "
+                  + "that is the delay this shortcut used to have. \(movedBy.described)")
+            failures += 1
+        } else {
+            print("  ✓ from Activity, ⌘, moves the same window to Settings,"
+                  + " without touching the view tree (\(movedBy.described))")
+        }
+
+        // A focused settings field must not eat the shortcut — the likeliest
+        // moment to press ⌘, is while typing in one of Settings' number
+        // fields, with the cursor already in it.
+        //
+        // Proven with the window's other menu shortcut, ⌃⌘S (Toggle Sidebar,
+        // View menu), because the sidebar is observable here while the section
+        // is not: the manager is already on Settings, so ⌘, would have nothing
+        // left to change. Menu key equivalents are matched ahead of text
+        // input: the field editor is offered the event first and declines the
+        // keys it does not own, and neither "," nor ⌃⌘S is one of them.
+        func firstEditableField() -> NSTextField? {
+            var found: NSTextField?
+            func walk(_ view: NSView) {
+                if found != nil { return }
+                if let field = view as? NSTextField, field.isEditable { found = field; return }
+                for sub in view.subviews { walk(sub) }
+            }
+            if let content = opened.contentView { walk(content) }
+            return found
+        }
+
+        if let field = firstEditableField(),
+           let event = keyEvent(characters: "s", keyCode: 1, modifiers: [.control, .command],
+                                windowNumber: opened.windowNumber) {
+            opened.makeFirstResponder(field)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            // A focused field means its field editor is the first responder;
+            // without that the check would prove nothing about focus.
+            let focused = opened.firstResponder is NSTextView
+            let before = managerModel()?.showsSidebar
+            NSApp.sendEvent(event)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            var after = managerModel()?.showsSidebar
+            if after == before {
+                opened.sendEvent(event)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                after = managerModel()?.showsSidebar
+            }
+            if focused, after != before {
+                print("  ✓ with a settings field focused, a menu shortcut still fires (⌃⌘S flipped the sidebar)")
+            } else {
+                print("  ✗ a focused field ate the shortcut (field editor focused: \(focused))")
+                failures += 1
+            }
+            managerModel()?.showsSidebar = true
+        } else {
+            print("  – no editable field in the window to test focus against")
+        }
+
+        // Said rather than left implied: this run cannot test a manager window
+        // that is minimized in the Dock — it refuses to minimize one at all
+        // (measured: `miniaturize(nil)` leaves `isMiniaturized` false).
+        print("  – not checked: ⌘, with the manager minimized")
+
+        opened.close()
         return failures
     }
 
