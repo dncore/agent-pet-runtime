@@ -287,6 +287,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // list that only refreshed on events could sit there contradicting
         // the pet beside it on screen.
         var ticks = 0
+        // The menu bar is not SwiftUI: it has to be told when a detection pass
+        // lands, or its agent items keep the previous pass's answers.
+        model.onAgentStatusesChanged = { [weak self] in self?.rebuildMenu() }
         managerWindow?.onTick = { [weak self] in
             self?.pushActivities()
             // Health re-reads each agent's integration record, and the hook
@@ -394,8 +397,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openManager() {
-        model?.refreshAll()
+        // The window comes first. It used to open after a full detection pass —
+        // a `--version` process per agent, 0.57s for six of them here and
+        // seconds on a cold machine — so the manager took that long to appear
+        // at all. The refresh runs behind it now and the cards fill in (user
+        // report, 2026-09-18).
+        let started = CFAbsoluteTimeGetCurrent()
         managerWindow?.show()
+        if CommandLine.arguments.contains("--verbose") {
+            let shown = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+            FileHandle.standardError.write(Data(
+                "[pet] manager open: window shown in \(shown)ms, detection running behind it\n".utf8
+            ))
+        }
+        model?.refreshAll()
     }
 
     // MARK: - Window

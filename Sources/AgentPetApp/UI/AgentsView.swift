@@ -14,6 +14,18 @@ struct AgentsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                // The pass that fills these in spawns a process per agent, and
+                // it no longer holds the window up: say so rather than showing
+                // a page with nothing on it (user report, 2026-09-18).
+                if model.agentStatuses.isEmpty, model.isRefreshingAgents {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Checking what is installed…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 8)
+                }
+
                 ForEach(model.agentStatuses) { status in
                     card(for: status)
                 }

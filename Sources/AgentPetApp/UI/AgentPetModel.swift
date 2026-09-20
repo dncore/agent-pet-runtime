@@ -149,14 +149,57 @@ final class AgentPetModel: ObservableObject {
     /// should never be two different answers.
     var onPetsChanged: (([PetLibrary.Entry]) -> Void)?
 
+    /// A detection pass is in flight.
+    ///
+    /// The Agents page shows that rather than an empty window: the pass is the
+    /// slowest thing in the app, and it no longer holds the window up.
+    @Published private(set) var isRefreshingAgents = false
+
+    /// Bumped for every pass, so one that finishes late cannot overwrite a
+    /// newer one's answers.
+    private var detectionGeneration = 0
+
+    /// Called when a pass lands, for the surfaces that are not SwiftUI: the
+    /// menu bar's agent items would otherwise keep whatever the pass before
+    /// this one said.
+    var onAgentStatusesChanged: (() -> Void)?
+
     /// Full refresh, including detection — which spawns a `--version` process
     /// per agent, so it runs when the manager opens rather than on a timer.
+    ///
+    /// It returns at once and the cards fill in. The spawns are the one slow
+    /// thing here — 0.57s for six agents measured on a warm machine, and
+    /// seconds on a cold one, where every CLI is read off disk for the first
+    /// time — and making the window wait for a diagnostic is the wrong trade
+    /// (user report, 2026-09-18). The previous answers stay up while this one
+    /// runs, so a refresh never blanks the page.
     func refreshAgents() {
+        let started = CFAbsoluteTimeGetCurrent()
         let profiles = AgentIntegrationRegistry.all(transaction: transaction)
-        let detector = AgentDetector(specifications: profiles.map(\.detection))
-        agentStatuses = profiles.map { integrationService.status(
-            for: $0, detection: detector.detect($0.detection)
-        ) }
+        let service = integrationService
+        detectionGeneration += 1
+        let generation = detectionGeneration
+        isRefreshingAgents = true
+        Task.detached(priority: .userInitiated) {
+            // One detector for the whole pass: it remembers the search paths it
+            // walked, and re-walking them per agent is wasted work.
+            let detector = AgentDetector(specifications: profiles.map(\.detection))
+            let statuses = profiles.map { profile in
+                service.status(for: profile, detection: detector.detect(profile.detection))
+            }
+            let elapsed = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+            await MainActor.run {
+                guard generation == self.detectionGeneration else { return }
+                self.isRefreshingAgents = false
+                self.agentStatuses = statuses
+                if CommandLine.arguments.contains("--verbose") {
+                    FileHandle.standardError.write(Data(
+                        "[pet] agents: detection took \(elapsed)ms for \(statuses.count)\n".utf8
+                    ))
+                }
+                self.onAgentStatusesChanged?()
+            }
+        }
     }
 
     /// Re-derives health from the facts that change between full refreshes —

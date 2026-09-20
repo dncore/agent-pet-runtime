@@ -333,17 +333,24 @@ enum MessagePanelLayout {
                             width: capped(limits, 200), isFlexible: false)
             case .message:
                 guard let message = row.message else { return nil }
-                let full = message.body.map { "\(message.label) — \($0)" } ?? message.label
                 // The wording never goes under, at any text size: the label is
                 // what the item is for, and the ellipsis is what the cut-off
-                // detail costs. It is also what the panel is sized to, plus a
-                // fixed allowance for the detail.
+                // detail costs. It is also what the panel is sized to, plus
+                // room for the detail — the allowance when there is that much
+                // detail, and only what there is when there is less. Sizing the
+                // panel to the full allowance whatever the message says leaves
+                // a hole at the right of a row whose detail is short or absent,
+                // which is what "Running" is (user report, 2026-09-18).
                 let wording = width(of: message.label + "…", font: metrics.messageFont)
+                let full = message.body.map { "\(message.label) — \($0)" } ?? message.label
+                let detail = width(of: full, font: metrics.messageFont)
+                    - width(of: message.label, font: metrics.messageFont)
                 return Item(kind: .message, primary: message.label, secondary: message.body,
                             context: nil,
                             width: min(width(of: full, font: metrics.messageFont),
                                        metrics.messageWidthCap),
-                            fitWidth: wording + metrics.messageDetailAllowance,
+                            fitWidth: wording
+                                + min(metrics.messageDetailAllowance, max(0, detail)),
                             isFlexible: true,
                             minimumWidth: metrics.minimumItemWidth / 2,
                             preferredWidth: wording)
@@ -433,8 +440,49 @@ enum MessagePanelLayout {
         // which is what it has always been.
         let width = config.fitsText ? min(max(fitted, petWidth), maximum) : maximum
 
-        return Plan(rows: rows, columns: squeezed(natural, into: width, metrics: metrics),
+        return Plan(rows: rows,
+                    columns: filled(squeezed(natural, into: width, metrics: metrics),
+                                    into: width, metrics: metrics),
                     alignment: config.alignment, metrics: metrics, width: width)
+    }
+
+    /// Spread any room the squeeze could not.
+    ///
+    /// A panel wider than what the columns want — the fit off, so it is the
+    /// settings' maximum, or a pet wider than what is drawn — would otherwise
+    /// keep the surplus as a hole at the right of every row, which reads as a
+    /// panel that did not bother to fill itself (user report, 2026-09-18).
+    ///
+    /// It goes back into the columns, each by its share of them, so the table
+    /// spans the panel the way it looks like it should: the columns are still
+    /// shared, so every row's items start in the same place, but the row ends
+    /// at the right edge rather than at the last word. The message's detail is
+    /// a case of this rather than a special case — it is the column with the
+    /// most room to use, so it gets the most of the surplus.
+    private static func filled(
+        _ columns: [Column],
+        into width: CGFloat,
+        metrics: Metrics
+    ) -> [Column] {
+        var columns = columns
+        let budget = max(0, width - metrics.padding * 2
+            - metrics.spacing * CGFloat(max(0, columns.count - 1)))
+        let drawn = columns.indices.filter { columns[$0].isDrawn }
+        let total = drawn.map { columns[$0].width }.reduce(0, +)
+        let slack = budget - total
+        guard slack > 0.5, total > 0 else { return columns }
+
+        var spent: CGFloat = 0
+        for (position, index) in drawn.enumerated() {
+            // The last column takes the rounding, so the row lands exactly on
+            // the panel's edge rather than a fraction short of it.
+            let share = position == drawn.count - 1
+                ? slack - spent
+                : (slack * columns[index].width / total).rounded(.down)
+            columns[index].width += share
+            spent += share
+        }
+        return columns
     }
 
     /// One column per enabled item kind that at least one row carries.

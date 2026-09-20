@@ -838,6 +838,70 @@ enum RenderSelfTest {
             failures += 1
         }
 
+        // The row fills the panel it was given. A panel wider than what the
+        // columns *want* — the fit off, so it is the settings' maximum, with a
+        // glyph and a message in it — used to leave the surplus as a hole at
+        // the right of every row, which reads as a panel that did not bother
+        // to fill itself (user report, 2026-09-18). The message's detail is
+        // what closes it: a name is a name whatever its column's width, while
+        // the preview under a wording shows more of the message.
+        var fillConfig = MessagePanelConfig()
+        fillConfig.widthPercent = MessagePanelConfig.maximumWidthPercent
+        fillConfig.fitsText = false
+        fillConfig.items = [.agent, .message].map { MessagePanelConfig.Item($0) }
+        let fillPlan = MessagePanelLayout.plan(for: panel, config: fillConfig, petWidth: petWidth)
+        let fillGaps = fillPlan.metrics.spacing * CGFloat(max(0, fillPlan.columns.count - 1))
+        let fillDrawn = fillPlan.columns.filter(\.isDrawn).map(\.width).reduce(0, +)
+        let spare = fillPlan.width - (fillPlan.metrics.padding * 2 + fillGaps + fillDrawn)
+        // A row with no detail does not reserve room for one: the fit follows
+        // the detail that is there, up to the allowance. Reserving all of it
+        // whatever the message says is what left a "Running" row with a hole
+        // after it.
+        let codexMessage = panel.rows.first { $0.agentID == "codex" }.flatMap { row in
+            MessagePanelLayout.items(for: row, config: fillConfig, petWidth: petWidth)
+                .first { $0.kind == .message }
+        }
+        if let codexMessage {
+            let wording = MessagePanelLayout.width(
+                of: codexMessage.primary + "…", font: fillPlan.metrics.messageFont
+            )
+            if abs(codexMessage.fitWidth - wording) < 0.5 {
+                print("  ✓ a message with no detail is sized for its wording alone "
+                      + "(\(Int(wording))pt), not for the \(Int(fillPlan.metrics.messageDetailAllowance))pt "
+                      + "allowance it has nothing to put in")
+            } else {
+                print("  ✗ a detail-less message reserves \(Int(codexMessage.fitWidth))pt against a "
+                      + "\(Int(wording))pt wording")
+                failures += 1
+            }
+        }
+
+        // A second case with room to spare in earnest — two columns in a
+        // 300%-wide panel — so that *where* the surplus goes is checked too: it
+        // is spread over the columns by their share, not piled into the last
+        // one or left at the right.
+        var spreadConfig = fillConfig
+        spreadConfig.items = [.agent, .task].map { MessagePanelConfig.Item($0) }
+        let spreadPlan = MessagePanelLayout.plan(for: panel, config: spreadConfig, petWidth: petWidth)
+        let spreadAgent = spreadPlan.columns.first { $0.kind == .agent }?.width ?? 0
+        let glyph = spreadPlan.metrics.iconItemWidth
+        let spreadGaps = spreadPlan.metrics.spacing
+            * CGFloat(max(0, spreadPlan.columns.count - 1))
+        let spreadDrawn = spreadPlan.columns.filter(\.isDrawn).map(\.width).reduce(0, +)
+        let spreadSpare = spreadPlan.width
+            - (spreadPlan.metrics.padding * 2 + spreadGaps + spreadDrawn)
+        if spare <= 0.5, spreadSpare <= 0.5, spreadAgent > glyph + 0.5 {
+            print("  ✓ the row fills the panel — \(Int(fillDrawn))pt of columns and "
+                  + "\(Int(fillGaps))pt of gaps in \(Int(fillPlan.width))pt — and the room "
+                  + "is spread over the columns (\(Int(spreadAgent))pt of column for a "
+                  + "\(Int(glyph))pt glyph)")
+        } else {
+            print("  ✗ \(Int(spare))pt of the panel's \(Int(fillPlan.width))pt is left blank "
+                  + "at the right of every row (and \(Int(spreadSpare))pt with two columns, "
+                  + "agent column \(Int(spreadAgent))pt for a \(Int(glyph))pt glyph)")
+            failures += 1
+        }
+
         // Widening the panel restores the task's whole name before it feeds the
         // message's detail. The row gives up the preview under a status wording
         // first, then the columns that only name things, and only then the
@@ -1037,6 +1101,32 @@ enum RenderSelfTest {
             root: BridgeSocketLocation.applicationSupportDirectory,
             shimPath: "/tmp/none"
         )
+        // Opening the manager does not wait for a detection pass. The pass
+        // spawns a `--version` process per agent — 0.57s for six of them when
+        // this was written, seconds on a cold machine — and it used to run
+        // before the window was ordered front (user report, 2026-09-18). The
+        // call returns at once now, and the answers land behind it.
+        let detectStarted = CFAbsoluteTimeGetCurrent()
+        model.refreshAgents()
+        let waited = CFAbsoluteTimeGetCurrent() - detectStarted
+        var landed = false
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            if !model.isRefreshingAgents, !model.agentStatuses.isEmpty {
+                landed = true
+                break
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        if waited < 0.1, landed {
+            print("  ✓ a detection pass returns in \(Int(waited * 1000))ms and lands behind it "
+                  + "(\(model.agentStatuses.count) agents) — the window does not wait for it")
+        } else {
+            print("  ✗ the detection pass blocked for \(Int(waited * 1000))ms "
+                  + "(landed: \(landed), \(model.agentStatuses.count) agents)")
+            failures += 1
+        }
+
         // The size this check is about to prove is remembered is the user's
         // own on any machine that is not running isolated: read it, clear it
         // so the opening size below is the real default, and put it back once
