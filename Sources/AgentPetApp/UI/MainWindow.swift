@@ -186,8 +186,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.model = model
     }
 
-    /// Whether the manager is open — the window exists, and is either on
-    /// screen or deliberately never put there.
+    /// Whether the manager is open — the window exists, has not been closed,
+    /// and is either on screen or deliberately never put there.
     ///
     /// The difference between the two things `show()` can be asked to do:
     /// bring back a window that was closed (which needs a new view tree), and
@@ -201,10 +201,23 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// manager precisely to inspect it. Reading it as closed would rebuild the
     /// tree between the two presses the shortcut's own check makes, and have
     /// that check measure a rebuild no user can cause.
+    ///
+    /// `isClosed` is why the diagnostic half cannot be the whole test: a
+    /// window that was put away and one that was never shown are the same to
+    /// `isVisible` and are not the same thing at all — the first has stopped
+    /// receiving SwiftUI's updates and needs the tree, the second has nothing
+    /// to revive. Without it, a diagnostic run could never press a user's
+    /// close-and-reopen at all, and `--selftest`'s check that reopening keeps
+    /// the window's size would pass without ever reaching the swap it is
+    /// about.
     var isOpen: Bool {
-        guard let window else { return false }
+        guard let window, !isClosed else { return false }
         return window.isVisible || HeadlessMode.isActive
     }
+
+    /// Whether the window has been closed since it was built. Set by
+    /// `windowWillClose`, cleared when `show()` brings it back.
+    private var isClosed = false
 
     /// The app is an accessory — menu bar only, no Dock icon — which is right
     /// for a pet and wrong for a window: an accessory app shows no application
@@ -248,13 +261,17 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             // at the minimum, and the next launch opened at the minimum too
             // (user report, 2026-09-18). The window keeps the frame it had,
             // and the flag keeps the intermediate size out of the defaults.
-            if !isOpen {
+            let needsTree = !isOpen
+            if needsTree {
                 let frame = window.frame
                 isRebuilding = true
                 defer { isRebuilding = false }
                 window.contentViewController = Self.makeContent(model: model)
                 window.setFrame(frame, display: false)
             }
+            // Open again, whichever way it got here: the next call is the one
+            // that must not rebuild.
+            isClosed = false
             if presents {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
@@ -302,6 +319,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         if let window {
             Self.rememberContentSize(window.contentRect(forFrameRect: window.frame).size)
         }
+        isClosed = true
         stopTicking()
         NSApp.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--verbose") {
