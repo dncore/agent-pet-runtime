@@ -1,5 +1,6 @@
 import AgentPetCore
 import AppKit
+import CoreText
 
 /// Turns a `MessagePanel` into rectangles.
 ///
@@ -22,7 +23,63 @@ enum MessagePanelLayout {
     nonisolated static let baseTailHeight: CGFloat = 4
     /// Narrower than this and an item says nothing useful.
     nonisolated static let baseMinimumItemWidth: CGFloat = 34
-    nonisolated static let baseContextBarSize = CGSize(width: 46, height: 7)
+    /// The usage badge: a ring as tall as the row it sits in, with the reading
+    /// inside it.
+    ///
+    /// A ring rather than the bar this used to be. The bar was 46×7pt of a row
+    /// that has to hold nine items: with the panel at its default 200% and the
+    /// pet at 112pt, that was 46pt of a 224pt row — a fifth of everything the
+    /// row had to say — and on a large pet the wording beside it was what gave
+    /// way (user request, 2026-09-20). The reading costs 17pt here, the ring
+    /// itself and nothing else, about a third of what the bar and its gap took.
+    ///
+    /// **Why the number is inside rather than beside it.** Beside it, the item
+    /// asks for the ring, a gap and the number — 43pt at the baseline and 64pt
+    /// at 1.5×, with the number drawn at the item's own size as that version
+    /// did — and the squeeze answers by giving every non-flexible column its
+    /// floor, so the context column came to rest at the width of the ring and
+    /// the number was never drawn at all: measured with all nine items enabled
+    /// and the panel width swept from 100% to 300%, the number was on screen in
+    /// **none** of the 11 places that row drew the ring (the roomy three-item
+    /// row, for contrast, had it in 9 of its 11). Inside the ring, the item's
+    /// whole reading costs one ring's width, and the ring's width is what the
+    /// cell floors at.
+    ///
+    /// The three numbers are all drawn through `Metrics`, so they follow the
+    /// pet: **Pet → Size** doubles the diameter, the stroke and the digits
+    /// together, which is what makes it read as one badge at any size rather
+    /// than a hairline beside big text (user requirement, 2026-09-20).
+    nonisolated static let baseContextRingDiameter: CGFloat = 17
+    nonisolated static let baseContextRingLineWidth: CGFloat = 2
+
+    /// The badge's digits, as a fraction of the panel's own text.
+    ///
+    /// Geometry, not taste. The ring may not be taller than the row (17pt
+    /// inside an 18pt row, a point of air), so with a 2pt stroke its hole is
+    /// 13pt across at the baseline. The digits have to fit inside that hole,
+    /// and they are sized for **"100"** — the widest reading there is, and the
+    /// one to size for, because a font size that shrank when the number
+    /// happened to reach three digits would read as a bug.
+    ///
+    /// Measured against the system font, per point of its size: "100" covers
+    /// 1.67 of ink across and 0.74 down — a digit's ink is its cap height,
+    /// there is no descender — so what has to fit the hole is a diagonal of
+    /// 1.83, and the 13pt hole holds 7.1pt, 0.68 of the panel's 10.5pt text.
+    /// 0.62 is that with the margin left in: the ink's diagonal then comes to
+    /// 11.9pt against the 13pt hole, so its corners sit six tenths of a point
+    /// inside the hole at the baseline.
+    ///
+    /// What is measured is the **ink**, not the font's line box: digits have no
+    /// descenders and no tails, so empty line-height may fall outside the hole
+    /// without anything being drawn through the stroke. `--selftest` measures
+    /// the same ink at 80, 112, 168 and 224pt pets, so raising this ratio
+    /// cannot silently start drawing digits over the ring.
+    ///
+    /// Three fifths of the size is the honest cost of putting the number
+    /// inside, and it is the price of the only version that is ever *drawn*:
+    /// beside the ring the item asks for about 43pt at the baseline against the
+    /// ring's 17, and the column never has that to give.
+    nonisolated static let baseContextRingFontRatio: CGFloat = 0.62
     /// The width an icon item is drawn at.
     nonisolated static let baseIconItemWidth: CGFloat = 13
     /// The width a message's own text may ask for before it is treated as
@@ -49,7 +106,7 @@ enum MessagePanelLayout {
     /// Every number the panel draws with, at the scale its text asks for.
     ///
     /// **One scale drives all of it.** The message, the other labels, the
-    /// agent's glyph, the usage bar, the row height, the padding, the tail:
+    /// agent's glyph, the usage ring, the row height, the padding, the tail:
     /// at the default setting on the default pet every one of them is the
     /// number it has always been, and anything that doubles the text — a
     /// bigger setting, a bigger pet — doubles the panel with it.
@@ -81,7 +138,11 @@ enum MessagePanelLayout {
         let iconItemWidth: CGFloat
         let messageWidthCap: CGFloat
         let messageDetailAllowance: CGFloat
-        let contextBarSize: CGSize
+        /// The usage badge: the ring's diameter and stroke, and the font its
+        /// digits are drawn at.
+        let contextRingDiameter: CGFloat
+        let contextRingLineWidth: CGFloat
+        let contextRingFont: NSFont
     }
 
     /// The font size the panel draws at.
@@ -115,8 +176,9 @@ enum MessagePanelLayout {
             iconItemWidth: baseIconItemWidth * scale,
             messageWidthCap: baseMessageWidthCap * scale,
             messageDetailAllowance: baseMessageDetailAllowance * scale,
-            contextBarSize: CGSize(width: baseContextBarSize.width * scale,
-                                   height: baseContextBarSize.height * scale)
+            contextRingDiameter: baseContextRingDiameter * scale,
+            contextRingLineWidth: baseContextRingLineWidth * scale,
+            contextRingFont: NSFont.systemFont(ofSize: points * baseContextRingFontRatio)
         )
     }
 
@@ -270,7 +332,7 @@ enum MessagePanelLayout {
     /// The items one row would draw, in configured order.
     ///
     /// Content that does not exist is left out rather than drawn as a blank:
-    /// a session with no status line has no context figure, and an empty bar
+    /// a session with no status line has no context figure, and an empty ring
     /// would read as a full one at a glance.
     static func items(
         for row: MessagePanel.Row,
@@ -318,11 +380,38 @@ enum MessagePanelLayout {
                             width: capped(tool, 130), isFlexible: false)
             case .context:
                 guard let context = row.context, let label = usageLabel(context) else { return nil }
-                let hasBar = usageFraction(context) != nil
-                let barAndGap: CGFloat = hasBar ? metrics.contextBarSize.width + 5 * metrics.scale : 0
+                let hasRing = usageFraction(context) != nil
+                // The badge, or the plain token count that stands in for it.
+                //
+                // With the reading inside the ring, the item asking for the
+                // ring asks for the whole reading: there is no second figure to
+                // make room for, and no state in which the column is wide
+                // enough for the gauge but not for the number beside it. The
+                // floor is the same number, so a column that cannot pay for a
+                // ring draws nothing rather than a ring cut open — the same
+                // exception a glyph gets.
+                //
+                // Half a *label's* width was the floor the bar had, and a bar
+                // has nothing to do with a label: on a narrow panel the column
+                // was cut below the width of the bar itself, the bar was still
+                // drawn at its own width, and it ran under the status wording
+                // in the next column (user report, 2026-09-20).
+                //
+                // A floor above the item's own claim is a claim the row cannot
+                // pay, and a column takes the widest floor of its cells: a
+                // token count demanding the general 17pt for a 14pt label would
+                // drop the whole column and take the badges out of every row
+                // that shares it. So the token path asks for no more than its
+                // label (measured: 38 of 350 sampled configurations, none of
+                // them before this change, whose ring cell alone asked for more
+                // than the general floor).
+                let claim = hasRing ? metrics.contextRingDiameter
+                                    : width(of: label, font: metrics.itemFont)
+                let floor = hasRing
+                    ? metrics.contextRingDiameter
+                    : min(claim, MessagePanelLayout.baseMinimumItemWidth / 2)
                 return Item(kind: .context, primary: label, secondary: nil, context: context,
-                            width: barAndGap + width(of: label, font: metrics.itemFont),
-                            isFlexible: false)
+                            width: claim, isFlexible: false, minimumWidth: floor)
             case .cost:
                 guard let label = row.context?.costLabel else { return nil }
                 return Item(kind: .cost, primary: label, secondary: nil, context: row.context,
@@ -587,6 +676,106 @@ enum MessagePanelLayout {
     }
 
 
+    /// What the usage figure draws inside its column: the badge, or the plain
+    /// text a token count falls back to.
+    ///
+    /// One place decides it, because two callers need the same answer: the
+    /// view draws these rects, and the self-test checks them. What keeps them
+    /// inside the column is **not** anything in here — it is the item's floor,
+    /// which is the ring's own width (`items(for:)`), and the assertion in
+    /// `--selftest` that a drawn ring stays inside its column. That pairing is
+    /// the answer to the bug this shape was introduced for: the bar was drawn
+    /// at the metrics' own width whatever the column had been squeezed to, and
+    /// it ran under the status wording in the next column (user report,
+    /// 2026-09-20). Nothing here measures text either: the item asking for one
+    /// ring is the claim the layout pass already made, and this is asked on
+    /// every frame the pet animates.
+    struct UsageLayout {
+        /// The badge: as wide as the metrics ask for, centred in its column
+        /// the way the agent's glyph is. `nil` when no fraction is known — a
+        /// token count with no window size behind it has nothing to gauge.
+        let ring: CGRect?
+        /// The hole, which is where the digits are drawn. Centred in it, so
+        /// the ring's stroke and the number cannot collide however wide the
+        /// panel's own text gets.
+        let digits: CGRect?
+        /// The column itself, for the token count that has no ring to sit in.
+        let text: CGRect?
+    }
+
+    /// The reading as the badge shows it: the whole percent, without its sign.
+    ///
+    /// A ring is drawn only when there *is* a percentage, so "72" inside one
+    /// cannot be read as anything else — and the sign is not cheap: it makes
+    /// the reading half again as wide (1.67pt of ink per point of font for
+    /// "100", 2.64 for "100%"), which over a hole this size is the difference
+    /// between digits two thirds of the panel's text and digits of half it
+    /// (see `baseContextRingFontRatio`).
+    static func percentDigits(_ fraction: Double) -> String {
+        "\(Int((fraction * 100).rounded()))"
+    }
+
+    /// The ink a string covers, measured from its baseline origin: the box the
+    /// glyphs occupy, not the line box the font reserves around them.
+    ///
+    /// The badge cares about both halves of that. Whether the digits fit the
+    /// ring's hole is a question about their ink — a digit has no descender and
+    /// no tail, so reserved line height that falls outside the hole draws
+    /// nothing — and where to put them is a question about where the ink is,
+    /// not where the baseline is.
+    static func ink(of text: String, font: NSFont) -> CGRect {
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: text, attributes: [.font: font])
+        )
+        return CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+    }
+
+    /// The baseline origin that puts a line's ink in the middle of a rect.
+    static func origin(centring ink: CGRect, in rect: CGRect) -> CGPoint {
+        CGPoint(x: rect.midX - ink.midX, y: rect.midY - ink.midY)
+    }
+
+    /// Whether the digits' ink still fits inside the ring's hole, measured
+    /// rather than assumed; `nil` when it fits.
+    ///
+    /// The size of the badge's digits is a ratio, and a ratio is a promise
+    /// about two other things: the hole, which is the ring less its stroke, and
+    /// the ink of the widest reading there is — **"100"**, three digits, since
+    /// the fraction is clamped to 0...1 and no reading is wider.
+    ///
+    /// One place, so the drawing and the self-test cannot disagree about it.
+    static func badgeInkFault(of ring: CGRect?, metrics: Metrics) -> String? {
+        let widest = "100"
+        let hole = (ring?.width ?? metrics.contextRingDiameter)
+            - 2 * metrics.contextRingLineWidth
+        let box = ink(of: widest, font: metrics.contextRingFont)
+        let diagonal = (box.width * box.width + box.height * box.height).squareRoot()
+        guard diagonal > hole + 0.01 else { return nil }
+        return String(format: "\"%@\" needs %.1fpt of hole in %.1fpt", widest, diagonal, hole)
+    }
+
+    static func usageLayout(_ item: Item, in rect: CGRect, metrics: Metrics) -> UsageLayout {
+        guard let context = item.context, usageFraction(context) != nil else {
+            // No gauge: the item is its own label, and a token count takes the
+            // whole column it has always taken.
+            return UsageLayout(ring: nil, digits: nil, text: rect)
+        }
+        // Drawn at the size the metrics ask for, with no clamp on the way in:
+        // the column's floor is never below this width (`items(for:)`), so a column too
+        // narrow for the ring is a column that is not drawn at all, and the
+        // self-test asserts that the ring it is handed stays inside its column.
+        // (The bar this replaced had no such floor behind it and was drawn at
+        // its own width regardless — user report, 2026-09-20.)
+        let ring = CGRect(x: rect.midX - metrics.contextRingDiameter / 2,
+                          y: rect.midY - metrics.contextRingDiameter / 2,
+                          width: metrics.contextRingDiameter,
+                          height: metrics.contextRingDiameter)
+        return UsageLayout(ring: ring,
+                           digits: ring.insetBy(dx: metrics.contextRingLineWidth,
+                                                dy: metrics.contextRingLineWidth),
+                           text: nil)
+    }
+
     /// Where each of a row's items is drawn, given the panel's columns.
     ///
     /// The columns are shared, so an item sits in the same place in every row:
@@ -614,6 +803,13 @@ enum MessagePanelLayout {
 
     // MARK: - Measuring
 
+    /// How much room a string needs, rounded up.
+    ///
+    /// Rounded up on purpose: this number becomes an item's claim, and a claim
+    /// half a point short of what the text draws is a claim that truncates.
+    /// Only the width is ever asked for — the badge's digits are measured by
+    /// their **ink** instead (`ink(of:font:)`), which is a different question
+    /// with a different answer (see `baseContextRingFontRatio`).
     static func width(of text: String, font: NSFont) -> CGFloat {
         (text as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
     }

@@ -366,7 +366,7 @@ enum RenderSelfTest {
     }
 
     /// Verifies the message panel beside the pet: the rows, the space they
-    /// reserve, the window that grows for them, and the usage bar.
+    /// reserve, the window that grows for them, and the usage ring.
     ///
     /// Driven by real events through the real engine — the panel is a view of
     /// the activity list, and a test that hand-built the rows would prove
@@ -675,11 +675,119 @@ enum RenderSelfTest {
         let withoutContextHash = contentHash(view)
         view.show(panel, config: appPanelConfig)
         if !appPanelConfig.items.contains(where: { $0.kind == .context && $0.isEnabled }) {
-            print("  – usage bar skipped: this config has the context item switched off")
+            print("  – usage ring skipped: this config has the context item switched off")
         } else if withoutContextHash != withPanel {
-            print("  ✓ the usage bar is actually painted")
+            print("  ✓ the usage ring is actually painted")
         } else {
             print("  ✗ turning the context item off changed nothing")
+            failures += 1
+        }
+
+        // Neither mark leaves the column it was given — the ring inside the
+        // column, the digits inside the ring — at any width the settings
+        // allow. The bar this replaced did neither: it was drawn at the
+        // metrics' own width whatever the column had been squeezed to, and its
+        // column's floor was half a *label's* minimum, a number with nothing to
+        // do with a bar, so on a narrow panel it ran straight under the status
+        // wording beside it (user report, 2026-09-20). Read here as rectangles,
+        // because that is the whole of the bug: the ring is painted, and the
+        // next item starts where the column ends.
+        var escapes: [String] = []
+        var ringsLookedAt = 0
+        var digitsLookedAt = 0
+        let crowded = MessagePanelConfig()   // every item on
+        var roomy = MessagePanelConfig()     // and a row with room to spare
+        roomy.items = [.session, .context, .message].map { MessagePanelConfig.Item($0) }
+        for (name, config) in [("the full row", crowded), ("a roomy row", roomy)] {
+            for percent in stride(from: MessagePanelConfig.minimumWidthPercent,
+                                  through: MessagePanelConfig.maximumWidthPercent, by: 20) {
+                var tight = config
+                tight.widthPercent = percent
+                tight.fitsText = false
+                let tightPlan = MessagePanelLayout.plan(for: panel, config: tight,
+                                                        petWidth: petWidth)
+                for row in tightPlan.rows {
+                    for (item, frame) in MessagePanelLayout.frames(
+                        for: row, columns: tightPlan.columns, metrics: tightPlan.metrics
+                    ) where item.kind == .context {
+                        // Only the badge is read here. An item with no badge is
+                        // a token count, which is text in the column it was
+                        // given and truncates in it, as it always has.
+                        let marks = MessagePanelLayout.usageLayout(
+                            item, in: frame, metrics: tightPlan.metrics
+                        )
+                        guard let ring = marks.ring else { continue }
+                        ringsLookedAt += 1
+                        if ring.minX < frame.minX - 0.5 || ring.maxX > frame.maxX + 0.5
+                            || ring.width > tightPlan.metrics.contextRingDiameter + 0.5 {
+                            escapes.append("a \(Int(ring.width))pt ring in a "
+                                           + "\(Int(frame.width))pt column at "
+                                           + "\(Int(percent))% in \(name)")
+                        }
+                        // The digits' rect is the ring's hole by construction,
+                        // so what is checked is the thing that decision is for:
+                        // that the ink a percentage can produce — three digits,
+                        // "100" being the widest — is inside the hole and not
+                        // through the stroke. The rule itself lives in the
+                        // layout (`badgeInkFault`); it is asked here with the
+                        // ring the layout actually handed out, which is the same
+                        // hole by construction, but asked over every (config,
+                        // width) pair this sweep covers.
+                        //
+                        // Asking the layout's own rule is how this check stopped
+                        // reporting a failure at the default pet for a badge
+                        // that draws correctly: measured by hand, the line box's
+                        // diagonal is 13.3pt against a 13pt hole while the ink's
+                        // is 10.6pt at the ratio this first ran at, 14.4 and
+                        // 11.9 at the 0.62 it ships with. The line box is never
+                        // the question — digits have no descenders, so empty
+                        // line height outside the hole draws nothing.
+                        if marks.digits != nil {
+                            digitsLookedAt += 1
+                            if let why = MessagePanelLayout.badgeInkFault(
+                                of: ring, metrics: tightPlan.metrics
+                            ) {
+                                escapes.append("\(why) at \(Int(percent))% in \(name)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // And at every scale the pet can be set to, because the badge is one
+        // drawing at one scale and the fit above is a ratio: at twice the pet
+        // the hole is twice as wide, but the digits are twice as tall too.
+        var holeAtTheSmallest: CGFloat = 0
+        for width in [CGFloat(AppConfig.PetConfig.minimumWidth), 112, 168, 224] {
+            var scaleConfig = MessagePanelConfig()
+            scaleConfig.messageFontSize = MessagePanelConfig.defaultFontSize
+            let metrics = MessagePanelLayout.metrics(for: scaleConfig, petWidth: width)
+            if holeAtTheSmallest == 0 {
+                holeAtTheSmallest = metrics.contextRingDiameter
+                    - 2 * metrics.contextRingLineWidth
+            }
+            if let why = MessagePanelLayout.badgeInkFault(of: nil, metrics: metrics) {
+                escapes.append("\(why) at a \(Int(width))pt pet")
+            }
+        }
+
+        if escapes.isEmpty, ringsLookedAt > 0, digitsLookedAt > 0 {
+            let atDefault = MessagePanelLayout.metrics(for: MessagePanelConfig(), petWidth: 112)
+            print("  ✓ the badge stays in its own column — \(ringsLookedAt) rings, "
+                  + "\(digitsLookedAt) of them with the reading inside, over "
+                  + "\(Int(MessagePanelConfig.minimumWidthPercent))–"
+                  + "\(Int(MessagePanelConfig.maximumWidthPercent))% of the pet — and \"100\", the "
+                  + "widest reading there is, fits its hole at every Pet → Size "
+                  + "(\(String(format: "%.1f", holeAtTheSmallest))pt hole at the smallest pet for "
+                  + "\(String(format: "%.1f", atDefault.contextRingFont.pointSize))pt digits "
+                  + "against \(String(format: "%.1f", atDefault.itemFont.pointSize))pt text)")
+        } else if !escapes.isEmpty {
+            print("  ✗ the usage figure is drawn outside its own column: "
+                  + escapes.prefix(4).joined(separator: "; "))
+            failures += 1
+        } else if ringsLookedAt == 0 || digitsLookedAt == 0 {
+            print("  ✗ no usage badge was laid out at any width — this check proves nothing")
             failures += 1
         }
 
@@ -784,7 +892,7 @@ enum RenderSelfTest {
             ("the padding", baseMetrics.padding, bigMetrics.padding),
             ("the item gap", baseMetrics.spacing, bigMetrics.spacing),
             ("the agent glyph", baseMetrics.iconItemWidth, bigMetrics.iconItemWidth),
-            ("the usage bar", baseMetrics.contextBarSize.width, bigMetrics.contextBarSize.width),
+            ("the usage badge", baseMetrics.contextRingDiameter, bigMetrics.contextRingDiameter),
             ("the panel", MessagePanelLayout.maximumPanelWidth(for: fullConfig, petWidth: 112),
              MessagePanelLayout.maximumPanelWidth(for: fullConfig, petWidth: 224)),
         ]
@@ -794,7 +902,32 @@ enum RenderSelfTest {
         } else {
             print("  ✓ at twice the pet the whole row is twice the size — "
                   + "\(Int(bigMetrics.rowHeight))pt row, \(Int(bigMetrics.itemFont.pointSize))pt labels, "
-                  + "\(Int(bigMetrics.contextBarSize.width))pt bar")
+                  + "\(Int(bigMetrics.contextRingDiameter))pt usage ring, "
+                  + "\(Int(bigMetrics.contextRingLineWidth))pt of stroke")
+        }
+
+        // And the badge's own numbers, because they are what the request was
+        // about: **Pet → Size** has to move the ring's diameter, its stroke and
+        // its digits *together*, or a bigger pet draws a hairline ring around a
+        // number that did not grow with it — the same two-panels-in-one-row
+        // fault the row above was fixed for. (The bar this replaced scaled as a
+        // whole too, 46×7pt by the same factor; what it failed at was staying
+        // inside the column it was handed, not following the pet.)
+        let ringWithThePet: [(String, CGFloat, CGFloat)] = [
+            ("diameter", baseMetrics.contextRingDiameter, bigMetrics.contextRingDiameter),
+            ("stroke", baseMetrics.contextRingLineWidth, bigMetrics.contextRingLineWidth),
+            ("digits", baseMetrics.contextRingFont.pointSize,
+             bigMetrics.contextRingFont.pointSize),
+        ]
+        if let (name, one, two) = ringWithThePet.first(where: { abs($0.2 - 2 * $0.1) > 0.01 }) {
+            print("  ✗ the badge's \(name) did not double with the pet: \(one) -> \(two)")
+            failures += 1
+        } else {
+            print("  ✓ the badge follows **Pet → Size**: a "
+                  + "\(String(format: "%.0f", baseMetrics.contextRingDiameter))pt ring in "
+                  + "\(String(format: "%.0f", baseMetrics.contextRingLineWidth))pt of stroke with "
+                  + "\(String(format: "%.1f", baseMetrics.contextRingFont.pointSize))pt digits at a "
+                  + "112pt pet, twice all three at 224pt")
         }
 
         // The status wording survives the largest text size the settings
@@ -966,6 +1099,71 @@ enum RenderSelfTest {
             print("  ✗ the panel outlived its sessions")
             failures += 1
         }
+
+        // A session that reports tokens without a window size has no fraction
+        // to gauge, so its cell is a plain token count — and it shares the
+        // context *column* with the rows that do draw a badge. A column takes
+        // the widest floor of the cells in it, so a token cell whose floor sits
+        // above its own claim drops the whole column and takes those badges
+        // with it (measured: 38 of 350 sampled configurations, none of them
+        // before the badge replaced the bar, whose cell asked for more than the
+        // general floor on its own). At the smallest pet the claim of "999" is
+        // under the general floor, which is what makes this the case that
+        // breaks.
+        controller.resetActivities()
+        send(.working, agent: "claude-code", session: "cafebabe-8888", at: 20,
+             context: SessionContext(usedPercent: 72, capturedAt: now))
+        send(.working, agent: "codex", session: "deadbeef-9999", at: 21, tool: "Bash",
+             context: SessionContext(totalTokens: 999, capturedAt: now))
+        var mixedConfig = MessagePanelConfig()
+        mixedConfig.items = [.session, .context, .message].map { MessagePanelConfig.Item($0) }
+        mixedConfig.widthPercent = MessagePanelConfig.minimumWidthPercent
+        let mixedPet = CGFloat(AppConfig.PetConfig.minimumWidth)
+        let mixedPlan = MessagePanelLayout.plan(for: view.currentPanel, config: mixedConfig,
+                                               petWidth: mixedPet)
+        var badgeRows = 0
+        var tokenRows = 0
+        var drawn = 0
+        for row in mixedPlan.rows {
+            for (item, frame) in MessagePanelLayout.frames(
+                for: row, columns: mixedPlan.columns, metrics: mixedPlan.metrics
+            ) where item.kind == .context {
+                drawn += 1
+                if MessagePanelLayout.usageLayout(item, in: frame, metrics: mixedPlan.metrics)
+                    .ring != nil {
+                    badgeRows += 1
+                } else {
+                    tokenRows += 1
+                }
+            }
+        }
+        // The column itself is where the defect showed: a floor above the
+        // widest claim in it means the column is not drawn at all
+        // (`Column.isDrawn`), and the cells above would simply not be there to
+        // count — which is why the check belongs here and not per cell: a
+        // per-cell form ("this item floors above its own claim") cannot fire
+        // once the floor is capped, and with this row's "999" label it could
+        // not have fired before the cap either, because the claim that was
+        // under the floor was in the column that got dropped, so there was no
+        // cell to complain about (round 3, 2026-09-20 — the per-cell form had
+        // survived round 2's fix by accident).
+        let mixedColumn = mixedPlan.columns.first { $0.kind == .context }
+        if mixedColumn?.isDrawn != true {
+            let shape = mixedColumn.map { column in
+                "width \(Int(column.width))pt against a floor of \(Int(column.minimumWidth))pt"
+            } ?? "no context column at all"
+            print("  ✗ the context column was dropped: \(shape)")
+            failures += 1
+        }
+        if drawn == 2, badgeRows == 1, tokenRows == 1 {
+            print("  ✓ a token count and a badge share the context column and both are drawn "
+                  + "at the smallest pet (\(Int(mixedPet))pt)")
+        } else {
+            print("  ✗ the mixed context column lost a row: \(drawn) of 2 cells drawn "
+                  + "(\(badgeRows) badges, \(tokenRows) token counts) at a \(Int(mixedPet))pt pet")
+            failures += 1
+        }
+        controller.resetActivities()
 
         return failures
     }

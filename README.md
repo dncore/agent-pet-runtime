@@ -291,7 +291,7 @@ up to three times the pet, and a *maximum*: the panel fits itself to its
 content by default — every row on one shared set of columns, so items line up
 down the panel — never wider than the maximum and never narrower than the pet.
 The panel's text size is yours to set (8–20pt at the default pet — every label,
-glyph and bar in the row draws at that size, and the panel widens with it, so
+glyph and ring in the row draws at that size, and the panel widens with it, so
 the setting zooms the whole panel rather than enlarging one line inside the
 same box), or you can let the pet's size govern both with "Scale the panel with
 the pet", which greys the two sliders out. The alignment picker says where the

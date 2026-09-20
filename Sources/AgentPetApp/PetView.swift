@@ -1,5 +1,6 @@
 import AgentPetCore
 import AppKit
+import CoreText
 
 /// Draws the current sprite frame, the session panel above it, and handles
 /// dragging.
@@ -316,46 +317,87 @@ final class PetView: NSView {
         return true
     }
 
-    /// The usage bar and its number.
+    /// The usage badge: a ring with the reading inside it.
     ///
-    /// A bar rather than a ring: rows are one line tall, and a ring that small
-    /// reads as a dot. The filled part is fluorescent green on purpose — it is
-    /// the one number here that changes on its own and is worth noticing from
-    /// across the room.
+    /// A ring rather than the bar this used to be. The bar was 46pt of a row
+    /// that has to hold nine items beside a pet, and on a narrow panel it was
+    /// the part of the row that pushed the status wording out (user request,
+    /// 2026-09-20). The number sits inside the ring rather than beside it
+    /// because inside is the only place it is ever drawn: beside it, the item
+    /// asks for the ring and the number, the squeeze gives every non-flexible
+    /// column its floor, and the number was never on screen at all with more
+    /// than a handful of items enabled. It costs the size — three fifths of
+    /// the panel's own text, measured in `baseContextRingFontRatio` — and buys
+    /// a reading that is always there.
+    ///
+    /// The filled arc is fluorescent green on purpose: it is the one number
+    /// here that changes on its own and is worth noticing from across the room.
+    ///
+    /// Both marks come from `MessagePanelLayout.usageLayout`, and both stay
+    /// inside the column because the item floors at the ring's own width —
+    /// the bar this replaced was drawn at its own width whatever the column had
+    /// been squeezed to, and ran under the wording beside it.
     private func drawContext(
         _ item: MessagePanelLayout.Item,
         in rect: CGRect,
         metrics: MessagePanelLayout.Metrics
     ) {
-        var textOrigin = rect.minX
-        if let context = item.context, let fraction = MessagePanelLayout.usageFraction(context) {
-            let bar = CGRect(
-                x: rect.minX,
-                y: rect.midY - metrics.contextBarSize.height / 2,
-                width: metrics.contextBarSize.width,
-                height: metrics.contextBarSize.height
-            )
-            NSColor.separatorColor.withAlphaComponent(0.6).setFill()
-            NSBezierPath(roundedRect: bar, xRadius: 3 * metrics.scale,
-                         yRadius: 3 * metrics.scale).fill()
+        let layout = MessagePanelLayout.usageLayout(item, in: rect, metrics: metrics)
 
-            let filled = CGRect(
-                x: bar.minX, y: bar.minY,
-                width: max(2, bar.width * CGFloat(fraction)), height: bar.height
-            )
-            MessagePanelLayout.usageColor.setFill()
-            NSBezierPath(roundedRect: filled, xRadius: 3 * metrics.scale,
-                         yRadius: 3 * metrics.scale).fill()
-            textOrigin = bar.maxX + 5 * metrics.scale
+        if let ring = layout.ring, let context = item.context,
+           let fraction = MessagePanelLayout.usageFraction(context) {
+            let centre = CGPoint(x: ring.midX, y: ring.midY)
+            let lineWidth = metrics.contextRingLineWidth
+            let radius = (ring.width - lineWidth) / 2
+
+            let track = NSBezierPath()
+            track.appendArc(withCenter: centre, radius: radius, startAngle: 0, endAngle: 360)
+            track.lineWidth = lineWidth
+            NSColor.separatorColor.withAlphaComponent(0.6).setStroke()
+            track.stroke()
+
+            if fraction > 0 {
+                // Twelve o'clock, clockwise. This view is not flipped, so 90°
+                // is straight up and the arc walks back down from there — the
+                // direction it fills in is the direction a gauge fills in.
+                let arc = NSBezierPath()
+                arc.appendArc(withCenter: centre, radius: radius,
+                              startAngle: 90, endAngle: 90 - 360 * fraction,
+                              clockwise: true)
+                arc.lineWidth = lineWidth
+                arc.lineCapStyle = .round
+                MessagePanelLayout.usageColor.setStroke()
+                arc.stroke()
+            }
+
+            // Drawn through Core Text rather than `NSAttributedString.draw`,
+            // because the position that matters is the *ink's* and not the line
+            // box's: `draw(in:)` puts a line at the top of the rect it is given,
+            // which would hang a digit — no descender, so its ink sits at the
+            // top of its line box — against the stroke above it.
+            if let digits = layout.digits, let context = NSGraphicsContext.current?.cgContext {
+                let string = NSAttributedString(
+                    string: MessagePanelLayout.percentDigits(fraction),
+                    attributes: [
+                        .font: metrics.contextRingFont,
+                        .foregroundColor: NSColor.labelColor.cgColor,
+                    ]
+                )
+                let line = CTLineCreateWithAttributedString(string)
+                context.saveGState()
+                context.textPosition = MessagePanelLayout.origin(
+                    centring: CTLineGetBoundsWithOptions(line, .useGlyphPathBounds), in: digits
+                )
+                CTLineDraw(line, context)
+                context.restoreGState()
+            }
         }
 
-        let textRect = CGRect(
-            x: textOrigin, y: rect.minY,
-            width: max(0, rect.maxX - textOrigin), height: rect.height
-        )
-        Self.text(item.primary, font: metrics.itemFont,
-                  color: .secondaryLabelColor)
-            .draw(in: textRect.insetBy(dx: 0, dy: 3 * metrics.scale))
+        if let text = layout.text {
+            Self.text(item.primary, font: metrics.itemFont,
+                      color: .secondaryLabelColor)
+                .draw(in: text.insetBy(dx: 0, dy: 3 * metrics.scale))
+        }
     }
 
     /// The wording the pet has always used, now one row among several.

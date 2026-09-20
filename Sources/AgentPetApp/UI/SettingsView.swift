@@ -99,7 +99,7 @@ struct SettingsView: View {
             Toggle("Scale the panel with the pet", isOn: binding(\.messagePanel.autoScale))
                 .help("On: the panel draws itself at the default text size for whatever "
                       + "pet size is set, and asks for the default width, so text, rows, "
-                      + "glyph and bar keep their proportions as the pet grows. The width "
+                      + "glyph and ring keep their proportions as the pet grows. The width "
                       + "and text size below are then set for you and do not apply.")
 
             LabeledContent("Width") {
@@ -150,7 +150,7 @@ struct SettingsView: View {
             .disabled(model.config.messagePanel.autoScale)
             .help("The panel's text, in points at the default 112pt pet. Everything "
                   + "the panel draws with scales together — the status wording, the "
-                  + "session's names, the agent's glyph, the usage bar, the row, the "
+                  + "session's names, the agent's glyph, the usage ring, the row, the "
                   + "padding — and the panel and its window grow with it, so a bigger "
                   + "text size zooms the panel rather than squeezing a bigger message "
                   + "into the same box.")
@@ -332,7 +332,7 @@ struct SettingsView: View {
 
     /// What the size settings mean at the pet size on screen now — the
     /// numbers the sliders alone cannot tell you, and the size every label,
-    /// glyph and bar in the panel is drawn at.
+    /// glyph and ring in the panel is drawn at.
     private var effectiveSizeSummary: String {
         let petWidth = CGFloat(model.config.pet.width)
         let points = MessagePanelLayout.effectiveFontSize(for: model.config.messagePanel)

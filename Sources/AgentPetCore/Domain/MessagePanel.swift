@@ -3,7 +3,7 @@ import Foundation
 /// Which parts of a session's row are drawn beside the pet, and in what order.
 ///
 /// The panel is a dashboard, and a dashboard that cannot be edited is one the
-/// user lives with rather than uses: some people want the context bar and
+/// user lives with rather than uses: some people want the context ring and
 /// nothing else, some want only the sessions that need them.
 public struct MessagePanelConfig: Codable, Sendable, Equatable {
 
@@ -24,7 +24,7 @@ public struct MessagePanelConfig: Codable, Sendable, Equatable {
     /// The panel's text size, in points **at the default pet size**.
     ///
     /// Every number the panel draws with is this multiple of its baseline —
-    /// the fonts, the row, the padding, the glyph, the usage bar — so a bigger
+    /// the fonts, the row, the padding, the glyph, the usage ring — so a bigger
     /// setting zooms the whole panel and widens it by the same factor.
     public static let minimumFontSize: Double = 8
     public static let maximumFontSize: Double = 20
