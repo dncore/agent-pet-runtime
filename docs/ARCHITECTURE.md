@@ -1104,12 +1104,14 @@ UI 显示的组合状态：
 
 生成文本由 `AgentPetExtension.source(agentID:shimPath:)` 拼出（不是随包资源）：能被测试逐条断言，也能在不安装任何东西的情况下读全文——与 `HookSetup.claudeCodeJSON` 同样的理由。它自己只是把参数交给**两个扩展文件共用的模板** `ExtensionTemplate.source(agentID:shimPath:events:marker:)`：两个 Agent 的扩展 API 相同，事件集是显式参数（agent id 与所有权标记也是），其余（shim 调用、会话 id、上下文读数、环境变量通道）全部共享。Pi 的配置器（`PiConfigurator`）走同一个模板的 `.pi` 分支。
 
-| 用途 | Pi 0.85 发 | Oh My Pi 18 发 |
+| 用途 | Pi 0.87 发 | Oh My Pi 18 发 |
 |---|---|---|
 | "被扣住了" | `ui_prompt_start`（自己的提示框在屏上） | `tool_approval_requested` / `ask` 工具 |
 | 一轮结束 | `agent_settled` | `agent_end`（丢掉 `willContinue` 为真的那些） |
 
 一条普通 `agent_end` 在 Pi 上不是结算（之后还可能自动重试或续跑），而 `agent_settled` 在 omp 18.1.22 里**不存在**（逐事件核对过），所以一个文件不可能同时正确；模板按事件集参数化正是为此。写入走 `ConfigTransaction.performText`（快照 → 备份 → 原子写 → 读回验证 → 失败回滚），与 JSON 事务同一套纪律、同一份代码。
+
+（版本号说明：表头的 **Pi 0.87** 是本机装机 0.87.1 的发行物口径——它的 `dist` 仍声明 `agent_settled` 与 `ui_prompt_start`——**不是**在 0.87.1 上重跑过行为验证。§6.7b 那条 2026-09-15 的实机验收记的是当时的 0.85.1，那里保留原数字不动；`ui_prompt_start` 至今仍未拿到行为证据，见 §6.7b 节尾的先测清单。）
 
 #### 上报什么
 
@@ -1137,13 +1139,25 @@ omp 的扩展是**进程内**的，能改 Agent 行为，所以边界必须写�
 
 #### 已知边界
 
-- 子代理会话若也派发扩展事件，会作为独立 session 出现在面板上（本项目不读 Agent 内部状态，无法可靠区分主/子会话）；实测 `-p` 模式下未出现。
+- **面板只画用户正在驾驶的会话**（2026-09-24 改）。判据是扩展上下文里的 `ctx.mode`，不是会话树：omp 给子代理建扩展运行时用的是 `initialize(actions, contextActions)` **两个参数**，没有 mode，于是 `ctx.mode` 取运行时的默认值 `"print"`——**即使父会话是交互式 TUI**（实测 18.3.0）。所以"子代理"和"`omp -p`"在 mode 上是同一种东西，一条规则同时管住两者：`send()` 在 `mode === "print"` 或 `"json"` 时直接返回，不 spawn shim。这意味着：
+  - 用户敲 `omp` 进 TUI → `mode: "tui"` → 上报，面板有一行。
+  - 会话内部起的子代理 → `mode: "print"` → **完全不上报**，不再有独立行。
+  - `omp -p` / `--mode json` → `mode: "print"` / `"json"` → **完全不上报**（从前会画一行，几秒后随 `session_shutdown` 消失）。JSON 模式是 `--mode json`——没有 `--json` 这个 flag（`omp --json` 会被当成未知 flag 拒绝）。
+  - RPC / ACP → `mode: "rpc"` → 上报，按"有人在驾驶"处理。
+  - 未知的 mode → **上报**（fail-open）：多点一行看得见，静默了没人会发现。
+  - 闸门写在 `send()` 里而不是某个 handler 里：`report()` 与 `reportContext()` 是它仅有的两个调用者，将来新加的 handler 不可能绕过去。
+  - **代价**：子代理干活期间面板上看不到"还在忙"。实测异步 spawn（`async.enabled` 默认 true）：父会话 t=11.7s 发 `agent_end`，子代理最后的工具在 t=15.76s，父会话 t=15.76s 才重新 `agent_start`——中间约 4 秒父行显示"已完成"。这与本仓库为 Claude Code 记下的那一类是同一个误报（`README.md`：`Stop` lies when a subagent is running；机制见 §5.1b 的 `Stop` 后台任务抑制）。抑制这件事本身有先例：Claude Code 靠默认字段名 `background_tasks`（`NormalizationRule.suppressedByRunningBackgroundTask`，不声明 `backgroundTasksField` 时用它），Grok 显式声明 `backgroundTasks`；缺的是 **omp 侧把这个信号发出来**，omp profile 上也还没有对应的抑制规则。
+  - **代价**：只用 `omp -p` 的装机，`lastEventAt` 永远是 nil，`IntegrationHealthEvaluator` 据此判 `.degraded`：卡片上是小圆点变黄、`Connected` 改成 `Degraded`，而"Last event"那一行显示 `none yet`（`AgentsView.lastEventSummary` 的 nil 分支；CLI 的 `--status` 对同一个 nil 打印的是 `never`）。从前任何一次 `-p` 都会写下这个时间戳。
 - 面板的**费用**一项对 Oh My Pi 没有数据源（扩展不发 `cost_usd`）；模型与上下文占用随每次结算的 `context_update` 上报（§6.7）。
 - 扩展在**会话启动时**加载：装完要新起一个 omp 会话才生效。UI 的 degraded / disconnected 文案按机制分支，正是为这句话。
 
-#### 真机验证（2026-09-15）
+#### 真机验证（2026-09-24 改）
 
-`--configure omp` 写文件 → 起一个真实 omp 会话（`omp -p`，`AGENTPET_SOCKET` 指向一个打印信封的 UDS 监听）→ 得到按序的 `session_start / agent_start / tool_execution_start(bash) / tool_execution_end / agent_end / session_shutdown`，每个信封都带同一个 session id 与 `/tmp` 工作目录 → `--unconfigure omp` 后文件消失、目录里另外两个扩展原样、`--status` 回到 `extension: 0`。
+**不要用 `omp -p` 验证。** 这一节原来的配方是 `omp -p` + `AGENTPET_SOCKET` 指向打印信封的 UDS 监听、以六个按序信封为凭证；但 §8.8 的 mode 闸门（见上方"已知边界"）让 `omp -p` **一个信封都不发**——`send()` 在 spawn 之前就返回了。照旧配方跑，一个正常的装机会被判成坏了。
+
+改用交互式会话（pty 里起 `omp`，真终端，逐字符输入 prompt 再回车）：得到 `session_start`（`mode: "tui"`）→ `agent_start` → 工具事件 → `agent_end`，全部带同一个 session id；同一次运行里让模型起一个子代理，则**不出现**任何第二个 session id 的信封（子代理的 `mode` 是 `print`）。同样的警告对 §6.7b 的 Pi 验收成立：那条写的是 headless 会话，照它跑现在会一个信封都没有。
+
+`--unconfigure omp` 后文件消失、目录里另外两个扩展原样、`--status` 回到 `extension: 0`（这部分不受闸门影响）。
 
 ---
 

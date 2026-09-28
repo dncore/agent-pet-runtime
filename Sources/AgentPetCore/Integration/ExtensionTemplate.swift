@@ -6,7 +6,7 @@ import Foundation
 /// events the pet needs; those events, the agent's id, its ownership marker and
 /// the cost note are what vary between the two generated files:
 ///
-/// | what it is for | Pi 0.85 | Oh My Pi 18 |
+/// | what it is for | Pi 0.87 | Oh My Pi 18 |
 /// |---|---|---|
 /// | "blocked on you" | `ui_prompt_start` (its own prompt is on screen) | `tool_approval_requested` / the `ask` tool |
 /// | a finished turn | `agent_settled` | `agent_end`, minus the ones carrying `willContinue` |
@@ -141,7 +141,32 @@ public enum ExtensionTemplate {
           return "pid-" + process.pid;
         }
 
-        function send(event, payload) {
+        // A session only belongs on the panel while a user is driving it. That
+        // excludes two things at once, and one rule should say both:
+        //
+        // - `omp -p` / `--mode json`: no one is watching, and the run is over in
+        //   seconds — the row it drew was noise that vanished again.
+        // - a subagent session: omp builds its extension runner with
+        //   `initialize(actions, contextActions)` and no mode, so `ctx.mode`
+        //   falls back to the runner's default `"print"` even when the parent
+        //   is an interactive TUI (measured on 18.3.0). A subagent is therefore
+        //   indistinguishable from `-p` by mode, which is what lets one test
+        //   cover both.
+        //
+        // The non-interactive modes are named and everything else reports, so a
+        // mode this file has never heard of still shows up: an extra row is
+        // visible, while a silent session is impossible to notice.
+        function isReportable(ctx) {
+          try {
+            const mode = ctx && ctx.mode;
+            return mode !== "print" && mode !== "json";
+          } catch {
+            return true;
+          }
+        }
+
+        function send(event, payload, ctx) {
+          if (!isReportable(ctx)) return;
           try {
             // The payload goes through the environment, not stdin. This code
             // runs inside the agent's own runtime, where a write to a pipe is
@@ -169,7 +194,7 @@ public enum ExtensionTemplate {
           try {
             const payload = { session_id: sessionIdFor(ctx), cwd: (ctx && ctx.cwd) || "" };
             if (toolName) payload.toolName = String(toolName);
-            send(event, payload);
+            send(event, payload, ctx);
           } catch {}
         }
 
@@ -199,7 +224,7 @@ public enum ExtensionTemplate {
 
         function reportContext(ctx) {
           const context = contextPayload(ctx);
-          if (context) send("context_update", context);
+          if (context) send("context_update", context, ctx);
         }
 
         export default function (pi) {
