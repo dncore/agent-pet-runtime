@@ -221,14 +221,61 @@ struct OhMyPiRegistryTests {
         #expect(profile.detection.configFiles.allSatisfy { $0.path.contains(".omp/agent") })
     }
 
-    @Test("the shipped extension text is stable enough to diff")
-    func sourceIsDeterministic() {
-        // The configurator writes this text and later compares the file to it
-        // to decide that nothing changed, so it cannot be a function of time,
-        // locale, or process state.
-        let first = AgentPetExtension.source(agentID: "omp", shimPath: aShimPath)
-        let second = AgentPetExtension.source(agentID: "omp", shimPath: aShimPath)
-        #expect(first == second)
-        #expect(first.contains("\n"), "source with no newlines is not a file")
+    @Test("only a session a user is driving is reported")
+    func reportsOnlyDrivenModes() {
+        // `omp -p` and a subagent session are both `print` — a subagent's
+        // runner is built with `initialize(actions, contextActions)` and no
+        // mode, so it takes the runner's default even under an interactive
+        // parent (measured on 18.3.0). One test therefore has to cover both,
+        // and the gate has to sit where every event passes: `send`.
+        let source = AgentPetExtension.source(agentID: "omp", shimPath: aShimPath)
+        // How the mode is turned into a decision is pinned wholesale in
+        // `unknownModeFailsOpen`, below: this one owns where the gate sits and
+        // who feeds it, not what `isReportable` says.
+
+        // The gate is in `send`, not in one handler: `report` and
+        // `reportContext` are its only callers, so a handler added later
+        // cannot grow an unguarded path to the shim.
+        let sendBody = source.components(separatedBy: "function send(event, payload, ctx) {")
+        #expect(sendBody.count == 2, "send does not take the ctx it must gate on")
+        // The gate is the first thing `send` does: before `try`, before the
+        // spawn. Indentation is the emitter's business, so compare on trimmed
+        // lines rather than on the exact column.
+        let firstLines = sendBody[1]
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(firstLines.first == "if (!isReportable(ctx)) return;",
+                "send does not gate before it spawns: \(firstLines.prefix(3))")
+
+        // Both callers hand it the context they were given.
+        #expect(source.contains("send(event, payload, ctx);"))
+        #expect(source.contains("send(\"context_update\", context, ctx);"))
+    }
+
+    @Test("a mode the file has never heard of still reports")
+    func unknownModeFailsOpen() {
+        // Naming the silent modes rather than the loud ones is half of it: the
+        // other half is that nothing gets in front of the return. A default
+        // (`ctx.mode || "print"`) or a guard (`if (typeof mode !== "string")
+        // return false;`) leaves the return line intact and still silences a
+        // context carrying no mode at all — the one outcome the design chose
+        // against, and the one no user could see. So the whole body is what
+        // gets pinned here, not just its decision.
+        let source = AgentPetExtension.source(agentID: "omp", shimPath: aShimPath)
+        let helper = source.components(separatedBy: "function isReportable(ctx) {")
+        #expect(helper.count == 2, "the file has no mode test to gate on")
+        let body = helper[1]
+            .components(separatedBy: "function send(")[0]
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(body == [
+            "try {",
+            "const mode = ctx && ctx.mode;",
+            "return mode !== \"print\" && mode !== \"json\";",
+            "} catch {",
+            "return true;",
+            "}",
+            "}",
+        ], "mode must be read straight off ctx and decided on the return alone: \(body)")
     }
 }

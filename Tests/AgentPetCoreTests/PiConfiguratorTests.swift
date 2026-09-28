@@ -71,6 +71,17 @@ struct PiConfigurationTests {
         #expect(known.contains("context_update"), "context_update is sent but unknown")
     }
 
+    @Test("Pi reports only a session a user is driving")
+    func reportsOnlyDrivenModes() {
+        // The template is shared, so `pi -p` is silenced by the same rule that
+        // keeps a subagent off the panel — the one behaviour worth pinning on
+        // this side, since Pi has no subagents of its own.
+        let source = PiConfigurator.template(shimPath: piShim)
+        #expect(source.contains("function isReportable(ctx)"))
+        #expect(source.contains("mode !== \"print\"") && source.contains("mode !== \"json\""))
+        #expect(source.contains("if (!isReportable(ctx)) return;"))
+    }
+
     @Test("the extension hands the payload over in the environment, not on a pipe")
     func payloadGoesThroughTheEnvironment() throws {
         // Ported from PR #1's finding: a write to a pipe from inside the
